@@ -1,0 +1,13 @@
+{
+  "name": "rotina-escritorio",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "install-all": "cd server && npm install && cd ../client && npm install",
+    "server": "cd server && npm start",
+    "client": "cd client && npm start",
+    "dev": "cd server && npm start & cd client && npm start",
+    "build": "cd client && npm run build",
+    "start": "cd server && NODE_ENV=production npm start"
+  }
+}

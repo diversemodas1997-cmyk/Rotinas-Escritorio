@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: rotinas-escritorio
+    env: node
+    buildCommand: cd server && npm install && cd ../client && npm install && npm run build
+    startCommand: cd server && NODE_ENV=production node index.js
+    envVars:
+      - key: JWT_SECRET
+        generateValue: true
+      - key: NODE_ENV
+        value: production
+      - key: GOOGLE_CLIENT_ID
+        sync: false
