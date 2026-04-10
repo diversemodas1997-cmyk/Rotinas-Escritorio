@@ -1183,31 +1183,249 @@ function TimelineView({ tasks, search }) {
 }
 
 // ─── AI PANEL ────────────────────────────────────────────────────────────────
-function AIPanel({ tasks, automations, setAutomations, canManageAutomations }) {
-  const [resp, setResp] = useState(null); const [loading, setLoading] = useState(false);
-  const run = () => { setLoading(true); setTimeout(() => { const ov = tasks.filter(t => t.deadline && daysUntil(t.deadline) < 0); const ts = tasks.reduce((a, t) => a + t.subitems.length, 0); const ds = tasks.reduce((a, t) => a + t.subitems.filter(s => s.status === "Feito").length, 0); const ss = tasks.reduce((a, t) => a + t.subitems.filter(s => s.status === "Parado").length, 0); setResp({ insights: [`📊 ${ts} subitens — ${ds} concluídos (${ts > 0 ? Math.round(ds / ts * 100) : 0}%)`, `⚠️ ${ov.length} tarefa(s) atrasada(s)`, `🛑 ${ss} subitem(ns) parado(s)`, ov.length > 0 ? `🚨 "${ov[0]?.name}" atrasada!` : "✅ Nenhuma atrasada", '💡 Priorize subitens "Parado"'] }); setLoading(false); }, 1200); };
+function AIPanel({ tasks, automations, setAutomations, canManageAutomations, columns, users }) {
+  const [activeTab, setActiveTab] = useState("analysis");
+  const [loading, setLoading] = useState(false);
+  const [analysis, setAnalysis] = useState(null);
+  const [aiChat, setAiChat] = useState([]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
+
+  // ─── DEEP ANALYSIS ─────────────────────────────────────────────────────────
+  const runAnalysis = () => {
+    setLoading(true);
+    setTimeout(() => {
+      const now = new Date(); now.setHours(0,0,0,0);
+      const errors = [];
+      const conflicts = [];
+      const improvements = [];
+      const stats = { total: tasks.length, totalSubs: 0, done: 0, overdue: 0, stopped: 0, noResp: 0, noPriority: 0, noDeadline: 0, emptyTasks: 0 };
+
+      tasks.forEach(t => {
+        const subs = t.subitems || [];
+        stats.totalSubs += subs.length;
+        stats.done += subs.filter(s => s.status === "Feito").length;
+        if (t.status === "Parado") stats.stopped++;
+
+        // Errors
+        if (!t.name || t.name.trim() === "") errors.push({ type: "error", icon: "🔴", msg: `Tarefa sem nome (ID: ${t.id})` });
+        if (subs.length === 0) { stats.emptyTasks++; errors.push({ type: "warning", icon: "🟡", msg: `"${t.name}" não tem subitens` }); }
+        if ((!t.responsible || t.responsible.length === 0)) { stats.noResp++; errors.push({ type: "warning", icon: "🟡", msg: `"${t.name}" sem responsável atribuído` }); }
+        if (!t.deadline) { stats.noDeadline++; }
+
+        // Overdue
+        if (t.deadline) {
+          const dl = parseLocalDate(t.deadline); if (dl) { dl.setHours(0,0,0,0); if (dl < now) { stats.overdue++; errors.push({ type: "error", icon: "🔴", msg: `"${t.name}" está atrasada (prazo: ${formatDate(t.deadline)})` }); } }
+        }
+
+        // Conflicts
+        subs.forEach(s => {
+          if (s.status === "Feito" && t.status === "Não iniciado") conflicts.push({ icon: "⚠️", msg: `Subitem "${s.name}" está feito, mas tarefa "${t.name}" está como "Não iniciado"` });
+          if (s.status === "Parado") conflicts.push({ icon: "🛑", msg: `Subitem "${s.name}" em "${t.name}" está parado — pode estar bloqueando progresso` });
+        });
+
+        // Check duplicate names
+        const subNames = subs.map(s => s.name.toLowerCase());
+        const dupes = subNames.filter((n, i) => subNames.indexOf(n) !== i);
+        if (dupes.length > 0) conflicts.push({ icon: "📋", msg: `Subitens duplicados em "${t.name}": ${[...new Set(dupes)].join(", ")}` });
+      });
+
+      // Improvements
+      if (stats.noDeadline > 0) improvements.push({ icon: "📅", msg: `${stats.noDeadline} tarefa(s) sem prazo definido — defina prazos para melhor controle` });
+      if (stats.emptyTasks > 0) improvements.push({ icon: "📝", msg: `${stats.emptyTasks} tarefa(s) sem subitens — quebre em etapas menores` });
+      if (stats.stopped > 0) improvements.push({ icon: "🔄", msg: `${stats.stopped} tarefa(s) parada(s) — revise bloqueios e redistribua` });
+      if (stats.noResp > 0) improvements.push({ icon: "👥", msg: `${stats.noResp} tarefa(s) sem responsável — atribua para garantir execução` });
+      const progress = stats.totalSubs > 0 ? Math.round(stats.done / stats.totalSubs * 100) : 0;
+      if (progress < 50) improvements.push({ icon: "📈", msg: `Progresso geral em ${progress}% — foque nas tarefas de alta prioridade` });
+      if (progress >= 80) improvements.push({ icon: "🎉", msg: `Excelente! ${progress}% concluído — mantenha o ritmo!` });
+
+      setAnalysis({ errors, conflicts, improvements, stats, progress, timestamp: new Date().toISOString() });
+      setLoading(false);
+    }, 800);
+  };
+
+  // ─── AI CHAT (Simulated consultant) ────────────────────────────────────────
+  const sendChat = () => {
+    if (!chatInput.trim()) return;
+    const userMsg = chatInput.trim();
+    setAiChat(prev => [...prev, { role: "user", text: userMsg }]);
+    setChatInput(""); setChatLoading(true);
+
+    setTimeout(() => {
+      // Smart context-aware responses
+      const lower = userMsg.toLowerCase();
+      let response = "";
+      const ov = tasks.filter(t => t.deadline && daysUntil(t.deadline) < 0);
+      const stopped = tasks.filter(t => t.status === "Parado");
+      const totalSubs = tasks.reduce((a, t) => a + t.subitems.length, 0);
+      const doneSubs = tasks.reduce((a, t) => a + t.subitems.filter(s => s.status === "Feito").length, 0);
+
+      if (lower.includes("atras") || lower.includes("prazo")) {
+        response = ov.length > 0 ? `Encontrei ${ov.length} tarefa(s) atrasada(s):\n${ov.map(t => `• "${t.name}" — prazo era ${formatDate(t.deadline)}`).join("\n")}\n\nRecomendo revisar os prazos e redistribuir responsáveis.` : "Nenhuma tarefa atrasada no momento. Tudo dentro do prazo!";
+      } else if (lower.includes("parad") || lower.includes("bloque")) {
+        response = stopped.length > 0 ? `${stopped.length} tarefa(s) parada(s):\n${stopped.map(t => `• "${t.name}"`).join("\n")}\n\nSugestão: Identifique o que está bloqueando cada uma e considere redistribuir para outro responsável.` : "Nenhuma tarefa parada. Tudo em andamento!";
+      } else if (lower.includes("progresso") || lower.includes("status") || lower.includes("resumo")) {
+        const pct = totalSubs > 0 ? Math.round(doneSubs / totalSubs * 100) : 0;
+        response = `📊 Resumo geral:\n• ${tasks.length} tarefas, ${totalSubs} subitens\n• ${doneSubs} concluídos (${pct}%)\n• ${ov.length} atrasada(s)\n• ${stopped.length} parada(s)\n\n${pct >= 70 ? "Bom progresso! Foque nos itens parados." : "Progresso pode melhorar. Priorize as tarefas críticas."}`;
+      } else if (lower.includes("priorida") || lower.includes("urgent") || lower.includes("critic")) {
+        const critical = tasks.filter(t => t.priority === "Crítica" || t.priority === "Alta");
+        response = critical.length > 0 ? `${critical.length} tarefa(s) de alta prioridade:\n${critical.map(t => `• "${t.name}" [${t.priority}] — ${t.status}`).join("\n")}\n\nFoque nessas primeiro.` : "Nenhuma tarefa com prioridade crítica/alta.";
+      } else if (lower.includes("melhor") || lower.includes("sugest") || lower.includes("dica")) {
+        response = "Sugestões de melhoria:\n\n1. Defina prazos para todas as tarefas\n2. Atribua responsáveis a cada tarefa\n3. Quebre tarefas grandes em subitens menores\n4. Revise tarefas paradas semanalmente\n5. Use relatórios para documentar progresso\n6. Mantenha os status atualizados diariamente";
+      } else {
+        response = `Entendi sua pergunta sobre "${userMsg}". Posso ajudar com:\n\n• "Quais tarefas estão atrasadas?"\n• "Mostre o progresso geral"\n• "Quais tarefas estão paradas?"\n• "Quais são prioridade alta?"\n• "Dê sugestões de melhoria"\n\nDigite uma dessas perguntas ou algo relacionado às suas tarefas.`;
+      }
+
+      setAiChat(prev => [...prev, { role: "ai", text: response }]);
+      setChatLoading(false);
+    }, 1000);
+  };
+
+  const tabs = [
+    { key: "analysis", label: "Análise", icon: "🔍" },
+    { key: "chat", label: "Consultor", icon: "💬" },
+    { key: "auto", label: "Automações", icon: "⚡" },
+  ];
+
   return (
     <div>
-      <div style={{ background: "linear-gradient(135deg, #1a1040 0%, #0d2137 100%)", borderRadius: 12, padding: 16, marginBottom: 16, border: "1px solid #2a1f5e" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}><span style={{ fontSize: 20 }}>🧠</span><div><div style={{ fontWeight: 700, fontSize: 14 }}>Análise IA</div><div style={{ fontSize: 10, color: "#778ca3" }}>Insights sobre suas tarefas</div></div></div>
-        <button onClick={run} disabled={loading} style={{ background: loading ? "#333" : "linear-gradient(135deg, #6c5ce7, #a55eea)", color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 12, fontWeight: 600, cursor: loading ? "wait" : "pointer", width: "100%" }}>{loading ? "⏳ Analisando..." : "Executar Análise"}</button>
-        {resp && <div style={{ marginTop: 12, background: "rgba(0,0,0,.3)", borderRadius: 8, padding: 10 }}>{resp.insights.map((ins, i) => <div key={i} style={{ color: "#c8ccd4", fontSize: 12, padding: "3px 0", lineHeight: 1.5 }}>{ins}</div>)}</div>}
+      {/* Tabs */}
+      <div style={{ display: "flex", marginBottom: 12, background: "#13151a", borderRadius: 8, overflow: "hidden", border: "1px solid #2a2d35" }}>
+        {tabs.map(t => (
+          <button key={t.key} onClick={() => setActiveTab(t.key)} style={{ flex: 1, padding: "8px 4px", border: "none", cursor: "pointer", fontSize: 11, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", gap: 3, background: activeTab === t.key ? "#6c5ce7" : "transparent", color: activeTab === t.key ? "#fff" : "#778ca3" }}>
+            <span style={{ fontSize: 12 }}>{t.icon}</span> {t.label}
+          </button>
+        ))}
       </div>
-      <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 10 }}>⚡ Automações IA</div>
-      {automations.map(a => (
-        <div key={a.id} style={{ background: "#23262e", borderRadius: 8, padding: 10, display: "flex", alignItems: "center", gap: 8, border: a.active ? "1px solid #6c5ce7" : "1px solid #333", marginBottom: 6 }}>
-          <span style={{ fontSize: 18 }}>{a.icon}</span>
-          <div style={{ flex: 1 }}><div style={{ fontWeight: 600, fontSize: 11 }}>{a.name}</div><div style={{ fontSize: 10, color: "#778ca3" }}>{a.desc}</div></div>
-          {canManageAutomations ? (
-            <div onClick={() => setAutomations(p => p.map(x => x.id === a.id ? { ...x, active: !x.active } : x))} style={{ width: 36, height: 20, borderRadius: 10, background: a.active ? "#6c5ce7" : "#444", cursor: "pointer", position: "relative" }}><div style={{ width: 16, height: 16, borderRadius: "50%", background: "#fff", position: "absolute", top: 2, left: a.active ? 18 : 2, transition: "left .2s" }} /></div>
-          ) : (
-            <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-              <div style={{ width: 36, height: 20, borderRadius: 10, background: a.active ? "#6c5ce740" : "#33333380", position: "relative", opacity: 0.5 }}><div style={{ width: 16, height: 16, borderRadius: "50%", background: "#aaa", position: "absolute", top: 2, left: a.active ? 18 : 2 }} /></div>
-              <LockedOverlay />
+
+      {/* ANALYSIS TAB */}
+      {activeTab === "analysis" && (
+        <div>
+          <div style={{ background: "linear-gradient(135deg, #1a1040 0%, #0d2137 100%)", borderRadius: 12, padding: 14, marginBottom: 12, border: "1px solid #2a1f5e" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+              <span style={{ fontSize: 20 }}>🧠</span>
+              <div><div style={{ fontWeight: 700, fontSize: 13 }}>Diagnóstico do Quadro</div><div style={{ fontSize: 10, color: "#778ca3" }}>Erros, conflitos e melhorias</div></div>
+            </div>
+            <button onClick={runAnalysis} disabled={loading} style={{ background: loading ? "#333" : "linear-gradient(135deg, #6c5ce7, #a55eea)", color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 12, fontWeight: 600, cursor: loading ? "wait" : "pointer", width: "100%" }}>
+              {loading ? "⏳ Analisando..." : "🔍 Executar Diagnóstico"}
+            </button>
+          </div>
+
+          {analysis && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {/* Stats bar */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
+                {[{ l: "Progresso", v: analysis.progress + "%", c: analysis.progress >= 70 ? "#00c875" : "#fdab3d" }, { l: "Atrasadas", v: analysis.stats.overdue, c: analysis.stats.overdue > 0 ? "#e2445c" : "#00c875" }, { l: "Paradas", v: analysis.stats.stopped, c: analysis.stats.stopped > 0 ? "#fdab3d" : "#00c875" }].map((s, i) => (
+                  <div key={i} style={{ background: "#23262e", borderRadius: 8, padding: "8px 6px", textAlign: "center", border: "1px solid #333" }}>
+                    <div style={{ fontSize: 16, fontWeight: 800, color: s.c }}>{s.v}</div>
+                    <div style={{ fontSize: 9, color: "#778ca3", fontWeight: 600 }}>{s.l}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Errors */}
+              {analysis.errors.length > 0 && (
+                <div style={{ background: "#2a1a1a", borderRadius: 8, padding: 10, border: "1px solid #4a2020" }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: "#e2445c", marginBottom: 6 }}>🔴 Erros e Alertas ({analysis.errors.length})</div>
+                  {analysis.errors.slice(0, 5).map((e, i) => <div key={i} style={{ fontSize: 11, color: "#d4a0a0", padding: "3px 0", lineHeight: 1.5 }}>{e.icon} {e.msg}</div>)}
+                  {analysis.errors.length > 5 && <div style={{ fontSize: 10, color: "#666", marginTop: 4 }}>+{analysis.errors.length - 5} mais...</div>}
+                </div>
+              )}
+
+              {/* Conflicts */}
+              {analysis.conflicts.length > 0 && (
+                <div style={{ background: "#2a2510", borderRadius: 8, padding: 10, border: "1px solid #4a4020" }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: "#fdab3d", marginBottom: 6 }}>⚠️ Conflitos ({analysis.conflicts.length})</div>
+                  {analysis.conflicts.slice(0, 5).map((c, i) => <div key={i} style={{ fontSize: 11, color: "#c4b080", padding: "3px 0", lineHeight: 1.5 }}>{c.icon} {c.msg}</div>)}
+                  {analysis.conflicts.length > 5 && <div style={{ fontSize: 10, color: "#666", marginTop: 4 }}>+{analysis.conflicts.length - 5} mais...</div>}
+                </div>
+              )}
+
+              {/* Improvements */}
+              {analysis.improvements.length > 0 && (
+                <div style={{ background: "#102a1a", borderRadius: 8, padding: 10, border: "1px solid #204a30" }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: "#00c875", marginBottom: 6 }}>💡 Melhorias Sugeridas ({analysis.improvements.length})</div>
+                  {analysis.improvements.map((m, i) => <div key={i} style={{ fontSize: 11, color: "#90c4a0", padding: "3px 0", lineHeight: 1.5 }}>{m.icon} {m.msg}</div>)}
+                </div>
+              )}
+
+              {analysis.errors.length === 0 && analysis.conflicts.length === 0 && (
+                <div style={{ background: "#102a1a", borderRadius: 8, padding: 14, textAlign: "center", border: "1px solid #204a30" }}>
+                  <span style={{ fontSize: 24 }}>✅</span>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "#00c875", marginTop: 4 }}>Quadro saudável! Nenhum erro ou conflito encontrado.</div>
+                </div>
+              )}
+
+              <div style={{ fontSize: 9, color: "#444", textAlign: "right" }}>Última análise: {formatTime(analysis.timestamp)}</div>
             </div>
           )}
         </div>
-      ))}
+      )}
+
+      {/* CHAT TAB */}
+      {activeTab === "chat" && (
+        <div style={{ display: "flex", flexDirection: "column", height: 400 }}>
+          <div style={{ background: "linear-gradient(135deg, #1a1040 0%, #0d2137 100%)", borderRadius: 10, padding: 12, marginBottom: 8, border: "1px solid #2a1f5e" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 20 }}>🤖</span>
+              <div><div style={{ fontWeight: 700, fontSize: 13 }}>Consultor IA</div><div style={{ fontSize: 10, color: "#778ca3" }}>Pergunte sobre suas tarefas</div></div>
+            </div>
+          </div>
+          <div style={{ flex: 1, overflow: "auto", display: "flex", flexDirection: "column", gap: 8, marginBottom: 8 }}>
+            {aiChat.length === 0 && (
+              <div style={{ textAlign: "center", padding: "20px 10px", color: "#556" }}>
+                <div style={{ fontSize: 28, marginBottom: 6 }}>💬</div>
+                <div style={{ fontSize: 12, color: "#778ca3" }}>Pergunte algo sobre suas tarefas</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 10 }}>
+                  {["Quais tarefas estão atrasadas?", "Mostre o progresso geral", "Dê sugestões de melhoria"].map((q, i) => (
+                    <div key={i} onClick={() => { setChatInput(q); }} style={{ background: "#23262e", borderRadius: 6, padding: "6px 10px", fontSize: 11, color: "#579bfc", cursor: "pointer", border: "1px solid #333" }}
+                      onMouseEnter={e => e.currentTarget.style.background = "#2a2d35"} onMouseLeave={e => e.currentTarget.style.background = "#23262e"}>
+                      {q}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {aiChat.map((msg, i) => (
+              <div key={i} style={{ display: "flex", justifyContent: msg.role === "user" ? "flex-end" : "flex-start" }}>
+                <div style={{ maxWidth: "85%", background: msg.role === "user" ? "#6c5ce7" : "#23262e", borderRadius: 10, padding: "8px 12px", border: msg.role === "ai" ? "1px solid #333" : "none" }}>
+                  {msg.role === "ai" && <div style={{ fontSize: 9, color: "#6c5ce7", fontWeight: 600, marginBottom: 4 }}>🤖 Consultor IA</div>}
+                  <div style={{ fontSize: 12, color: "#e8eaed", lineHeight: 1.6, whiteSpace: "pre-line" }}>{msg.text}</div>
+                </div>
+              </div>
+            ))}
+            {chatLoading && <div style={{ display: "flex", gap: 4, padding: "8px 12px" }}><div style={{ width: 6, height: 6, borderRadius: "50%", background: "#6c5ce7", animation: "pulse 1s ease infinite" }} /><div style={{ width: 6, height: 6, borderRadius: "50%", background: "#6c5ce7", animation: "pulse 1s ease infinite .2s" }} /><div style={{ width: 6, height: 6, borderRadius: "50%", background: "#6c5ce7", animation: "pulse 1s ease infinite .4s" }} /></div>}
+          </div>
+          <div style={{ display: "flex", gap: 6 }}>
+            <input value={chatInput} onChange={e => setChatInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter") sendChat(); }}
+              placeholder="Pergunte algo..." style={{ flex: 1, padding: "8px 10px", borderRadius: 8, border: "1px solid #333", background: "#13151a", color: "#e8eaed", fontSize: 12, outline: "none" }} />
+            <button onClick={sendChat} disabled={chatLoading} style={{ background: "#6c5ce7", color: "#fff", border: "none", borderRadius: 8, padding: "8px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>→</button>
+          </div>
+        </div>
+      )}
+
+      {/* AUTOMATIONS TAB */}
+      {activeTab === "auto" && (
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 10 }}>⚡ Automações IA</div>
+          {automations.map(a => (
+            <div key={a.id} style={{ background: "#23262e", borderRadius: 8, padding: 10, display: "flex", alignItems: "center", gap: 8, border: a.active ? "1px solid #6c5ce7" : "1px solid #333", marginBottom: 6 }}>
+              <span style={{ fontSize: 18 }}>{a.icon}</span>
+              <div style={{ flex: 1 }}><div style={{ fontWeight: 600, fontSize: 11 }}>{a.name}</div><div style={{ fontSize: 10, color: "#778ca3" }}>{a.desc}</div></div>
+              {canManageAutomations ? (
+                <div onClick={() => setAutomations(p => p.map(x => x.id === a.id ? { ...x, active: !x.active } : x))} style={{ width: 36, height: 20, borderRadius: 10, background: a.active ? "#6c5ce7" : "#444", cursor: "pointer", position: "relative" }}><div style={{ width: 16, height: 16, borderRadius: "50%", background: "#fff", position: "absolute", top: 2, left: a.active ? 18 : 2, transition: "left .2s" }} /></div>
+              ) : (
+                <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  <div style={{ width: 36, height: 20, borderRadius: 10, background: a.active ? "#6c5ce740" : "#33333380", position: "relative", opacity: 0.5 }}><div style={{ width: 16, height: 16, borderRadius: "50%", background: "#aaa", position: "absolute", top: 2, left: a.active ? 18 : 2 }} /></div>
+                  <LockedOverlay />
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <style>{`@keyframes pulse { 0%, 100% { opacity: 0.3; transform: scale(0.8); } 50% { opacity: 1; transform: scale(1.2); } }`}</style>
     </div>
   );
 }
