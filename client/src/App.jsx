@@ -1895,17 +1895,21 @@ function ProfileEditor({ userData, onSave, onClose, allUsers }) {
   const [error, setError] = useState("");
   const [tab, setTab] = useState("info");
 
-  const handleSave = () => {
+  const handleSave = async () => {
     setError("");
     if (!name.trim()) { setError("Nome é obrigatório"); return; }
     if (!email.trim() || !email.includes("@")) { setError("E-mail inválido"); return; }
     const emailTaken = allUsers.find(u => u.email.toLowerCase() === email.toLowerCase().trim() && u.name !== userData.name);
     if (emailTaken) { setError("Este e-mail já está em uso por " + emailTaken.name); return; }
 
-    if (showPassSection) {
-      if (currentPass && currentPass !== userData.password) { setError("Senha atual incorreta"); return; }
-      if (newPass && newPass.length < 4) { setError("Nova senha deve ter pelo menos 4 caracteres"); return; }
-      if (newPass && newPass !== confirmPass) { setError("As senhas não coincidem"); return; }
+    if (showPassSection && newPass) {
+      if (!currentPass) { setError("Digite a senha atual"); return; }
+      if (newPass.length < 4) { setError("Nova senha deve ter pelo menos 4 caracteres"); return; }
+      if (newPass !== confirmPass) { setError("As senhas não coincidem"); return; }
+
+      // Verify current password via API
+      const check = await apiCall("/auth/login", { method: "POST", body: JSON.stringify({ email: userData.email, password: currentPass }) });
+      if (!check || !check.token) { setError("Senha atual incorreta"); return; }
     }
 
     onSave({
@@ -1915,9 +1919,10 @@ function ProfileEditor({ userData, onSave, onClose, allUsers }) {
       department,
       bio: bio.trim(),
       avatarColor,
-      password: (showPassSection && newPass) ? newPass : userData.password,
+      password: (showPassSection && newPass) ? newPass : undefined,
     });
     setSaved(true);
+    setShowPassSection(false); setCurrentPass(""); setNewPass(""); setConfirmPass("");
     setTimeout(() => setSaved(false), 2000);
   };
 
