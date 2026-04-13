@@ -13,7 +13,7 @@ const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
-const db = new Database(path.join(__dirname, 'database.sqlite'));
+const db = new Database(process.env.DB_PATH || path.join(__dirname, 'database.sqlite'));
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
@@ -156,6 +156,7 @@ app.put('/api/subitems/:id',auth,(req,res)=>{const{name,owner,status,responsible
 app.post('/api/subitems',auth,(req,res)=>{const{id,task_id,name,owner,status,responsible,total,deadline,custom}=req.body;const m=db.prepare('SELECT MAX(sort_order) as m FROM subitems WHERE task_id=?').get(task_id);db.prepare('INSERT INTO subitems (id,task_id,name,owner,status,responsible,total,deadline,custom,sort_order) VALUES(?,?,?,?,?,?,?,?,?,?)').run(id,task_id,name||'Novo subitem',owner||'',status||'Não iniciado',JSON.stringify(responsible||[]),total||0,deadline||null,JSON.stringify(custom||{}),(m?.m||0)+1);res.json({success:true});});
 
 app.post('/api/updates',auth,(req,res)=>{const{id,targetType,targetId,text,mentions,files}=req.body;db.prepare('INSERT INTO updates (id,target_type,target_id,author,text,mentions,files) VALUES(?,?,?,?,?,?,?)').run(id,targetType,targetId,req.user.name,text||'',JSON.stringify(mentions||[]),JSON.stringify(files||[]));res.json({success:true});});
+app.delete('/api/updates/:id',auth,(req,res)=>{const u=db.prepare('SELECT author FROM updates WHERE id=?').get(req.params.id);if(!u)return res.status(404).json({error:'Relatório não encontrado'});if(u.author!==req.user.name&&req.user.role!=='admin')return res.status(403).json({error:'Apenas o autor pode excluir'});db.prepare('DELETE FROM updates WHERE id=?').run(req.params.id);res.json({success:true});});
 
 app.get('/api/columns',auth,(req,res)=>res.json(db.prepare('SELECT * FROM columns_config ORDER BY sort_order').all().map(c=>({id:c.id,name:c.name,type:c.type,field:c.field,builtIn:!!c.built_in,isDeadline:!!c.is_deadline,width:c.width}))));
 app.post('/api/columns',auth,(req,res)=>{const{id,name,type,field,isDeadline,width}=req.body;const m=db.prepare('SELECT MAX(sort_order) as m FROM columns_config').get().m||0;db.prepare('INSERT INTO columns_config (id,name,type,field,built_in,is_deadline,width,sort_order) VALUES(?,?,?,?,0,?,?,?)').run(id,name,type,field,isDeadline?1:0,width||'80px',m+1);res.json({success:true});});
