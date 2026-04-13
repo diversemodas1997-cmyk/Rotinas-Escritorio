@@ -4,9 +4,12 @@ import { useState, useMemo, useRef, useEffect } from "react";
 const API_URL = window.location.hostname === "localhost" ? "http://localhost:3001" : "";
 let _token = localStorage.getItem("rotina_token");
 
+let _inFlightMutations = 0;
 async function apiCall(path, opts = {}) {
   const h = { "Content-Type": "application/json" };
   if (_token) h["Authorization"] = `Bearer ${_token}`;
+  const isMutation = opts.method && opts.method.toUpperCase() !== "GET";
+  if (isMutation) _inFlightMutations++;
   try {
     const res = await fetch(`${API_URL}/api${path}`, { ...opts, headers: { ...h, ...opts.headers } });
     if (res.status === 401) { _token = null; localStorage.removeItem("rotina_token"); return null; }
@@ -14,7 +17,9 @@ async function apiCall(path, opts = {}) {
     if (!res.ok) throw new Error(data.error || "Erro");
     return data;
   } catch (e) { console.error("API error:", e.message); return null; }
+  finally { if (isMutation) _inFlightMutations--; }
 }
+function hasInFlightMutations() { return _inFlightMutations > 0; }
 function setToken(t) { _token = t; if (t) localStorage.setItem("rotina_token", t); else localStorage.removeItem("rotina_token"); }
 function getToken() { return _token; }
 
@@ -2366,6 +2371,32 @@ function Dashboard({ currentUser, onLogout }) {
     loadData();
     return () => { mounted = false; };
   }, []);
+
+  // ─── POLLING: sincronização automática entre clientes ─────────────────────
+  useEffect(() => {
+    if (!dataLoaded) return;
+    const POLL_MS = 4000;
+    const normalizeTasks = (data) => data.map(t => ({ ...t, custom: t.custom || {}, updates: t.updates || [], subitems: (t.subitems || []).map(s => ({ ...s, custom: s.custom || {}, updates: s.updates || [], cancellations: s.cancellations || 0 })) }));
+    let cancelled = false;
+    const isUserEditing = () => {
+      const ae = document.activeElement;
+      if (!ae) return false;
+      const tag = ae.tagName;
+      return tag === "INPUT" || tag === "TEXTAREA" || ae.isContentEditable;
+    };
+    const tick = async () => {
+      if (cancelled) return;
+      if (document.hidden) return;
+      if (isUserEditing()) return;
+      if (hasInFlightMutations()) return;
+      const data = await apiCall("/tasks");
+      if (cancelled || !data) return;
+      if (isUserEditing() || hasInFlightMutations()) return;
+      setTasks(normalizeTasks(data));
+    };
+    const id = setInterval(tick, POLL_MS);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [dataLoaded]);
 
   // ─── API-BACKED SETTERS ────────────────────────────────────────────────────
   const apiUpdateTask = (tid, newTask) => {
