@@ -4,6 +4,10 @@ services:
     env: node
     buildCommand: cd server && npm install && cd ../client && npm install && npm run build
     startCommand: cd server && NODE_ENV=production node index.js
+    disk:
+      name: data
+      mountPath: /data
+      sizeGB: 1
     envVars:
       - key: JWT_SECRET
         generateValue: true
@@ -11,3 +15,5 @@ services:
         value: production
       - key: GOOGLE_CLIENT_ID
         sync: false
+      - key: DB_PATH
+        value: /data/database.sqlite
