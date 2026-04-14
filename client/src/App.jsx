@@ -921,7 +921,7 @@ function InlineAddRow({ placeholder, onAdd, gridCols, cellBorder, cellStyle, acc
 }
 
 // ─── BOARD VIEW (Monday.com style) ───────────────────────────────────────────
-function BoardView({ tasks, setTasks, apiUpdateTask, apiUpdateSub, apiAddTask, apiAddSubitem, search, allPeople, columns, setColumns, apiUpdateColumn, apiDeleteColumn, setShowAddCol, subColumns, setSubColumns, apiUpdateSubColumn, apiDeleteSubColumn, setShowAddSubCol, onOpenUpdates, perms = {} }) {
+function BoardView({ tasks, setTasks, apiUpdateTask, apiUpdateSub, apiAddTask, apiAddSubitem, search, allPeople, columns, setColumns, apiUpdateColumn, apiDeleteColumn, apiReorderColumns, setShowAddCol, subColumns, setSubColumns, apiUpdateSubColumn, apiDeleteSubColumn, setShowAddSubCol, onOpenUpdates, perms = {} }) {
   const [expanded, setExpanded] = useState({});
   const [selected, setSelected] = useState({});
   const [groupOpen, setGroupOpen] = useState(true);
@@ -937,7 +937,7 @@ function BoardView({ tasks, setTasks, apiUpdateTask, apiUpdateSub, apiAddTask, a
   };
 
   // Drag for columns
-  const colDrag = useDragReorder(columns, setColumns);
+  const colDrag = useDragReorder(columns, (newCols) => { setColumns(newCols); if (apiReorderColumns) apiReorderColumns(newCols.map(c => c.id)); });
   // Drag for tasks
   const taskDrag = useDragReorder(filtered, (newFiltered) => {
     if (!search) { setTasks(newFiltered); return; }
@@ -2467,6 +2467,10 @@ function Dashboard({ currentUser, onLogout }) {
     apiCall(`/columns/${colId}`, { method: "DELETE" });
   };
 
+  const apiReorderColumns = (orderedIds) => {
+    apiCall("/columns/reorder", { method: "PUT", body: JSON.stringify({ order: orderedIds }) });
+  };
+
   const apiAddSubColumn = (col) => {
     const withScope = { ...col, scope: "subitem" };
     setSubColumns(prev => [...prev, withScope]);
@@ -2686,7 +2690,7 @@ function Dashboard({ currentUser, onLogout }) {
       {/* CONTENT */}
       <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
         <div style={{ flex: 1, overflow: "auto", padding: 14 }}>
-          {view === "board" && <BoardView tasks={tasks} setTasks={setTasks} apiUpdateTask={apiUpdateTask} apiUpdateSub={apiUpdateSub} apiAddTask={apiAddTask} apiAddSubitem={apiAddSubitem} search={search} allPeople={allPeople} columns={columns} setColumns={setColumns} apiUpdateColumn={apiUpdateColumn} apiDeleteColumn={apiDeleteColumn} setShowAddCol={setShowAddCol} subColumns={subColumns} setSubColumns={setSubColumns} apiUpdateSubColumn={apiUpdateSubColumn} apiDeleteSubColumn={apiDeleteSubColumn} setShowAddSubCol={setShowAddSubCol} onOpenUpdates={openUpdates} perms={perms} />}
+          {view === "board" && <BoardView tasks={tasks} setTasks={setTasks} apiUpdateTask={apiUpdateTask} apiUpdateSub={apiUpdateSub} apiAddTask={apiAddTask} apiAddSubitem={apiAddSubitem} search={search} allPeople={allPeople} columns={columns} setColumns={setColumns} apiUpdateColumn={apiUpdateColumn} apiDeleteColumn={apiDeleteColumn} apiReorderColumns={apiReorderColumns} setShowAddCol={setShowAddCol} subColumns={subColumns} setSubColumns={setSubColumns} apiUpdateSubColumn={apiUpdateSubColumn} apiDeleteSubColumn={apiDeleteSubColumn} setShowAddSubCol={setShowAddSubCol} onOpenUpdates={openUpdates} perms={perms} />}
           {view === "kanban" && <KanbanView tasks={tasks} setTasks={setTasks} apiUpdateTask={apiUpdateTask} search={search} allPeople={allPeople} onOpenUpdates={openUpdates} />}
           {view === "timeline" && <TimelineView tasks={tasks} search={search} />}
         </div>
