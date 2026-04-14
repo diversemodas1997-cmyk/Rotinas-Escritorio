@@ -921,7 +921,7 @@ function InlineAddRow({ placeholder, onAdd, gridCols, cellBorder, cellStyle, acc
 }
 
 // ─── BOARD VIEW (Monday.com style) ───────────────────────────────────────────
-function BoardView({ tasks, setTasks, apiUpdateTask, apiUpdateSub, apiAddTask, apiAddSubitem, search, allPeople, columns, setColumns, apiUpdateColumn, apiDeleteColumn, apiReorderColumns, setShowAddCol, subColumns, setSubColumns, apiUpdateSubColumn, apiDeleteSubColumn, setShowAddSubCol, onOpenUpdates, perms = {} }) {
+function BoardView({ tasks, setTasks, apiUpdateTask, apiUpdateSub, apiAddTask, apiAddSubitem, search, allPeople, columns, setColumns, apiUpdateColumn, apiDeleteColumn, apiReorderColumns, apiReorderTasks, apiReorderSubitems, setShowAddCol, subColumns, setSubColumns, apiUpdateSubColumn, apiDeleteSubColumn, setShowAddSubCol, onOpenUpdates, perms = {} }) {
   const [expanded, setExpanded] = useState({});
   const [selected, setSelected] = useState({});
   const [groupOpen, setGroupOpen] = useState(true);
@@ -940,11 +940,13 @@ function BoardView({ tasks, setTasks, apiUpdateTask, apiUpdateSub, apiAddTask, a
   const colDrag = useDragReorder(columns, (newCols) => { setColumns(newCols); if (apiReorderColumns) apiReorderColumns(newCols.map(c => c.id)); });
   // Drag for tasks
   const taskDrag = useDragReorder(filtered, (newFiltered) => {
-    if (!search) { setTasks(newFiltered); return; }
+    if (!search) { setTasks(newFiltered); if (apiReorderTasks) apiReorderTasks(newFiltered.map(t => t.id)); return; }
     const ids = newFiltered.map(t => t.id);
     setTasks(prev => {
       const rest = prev.filter(t => !ids.includes(t.id));
-      return [...newFiltered, ...rest];
+      const merged = [...newFiltered, ...rest];
+      if (apiReorderTasks) apiReorderTasks(merged.map(t => t.id));
+      return merged;
     });
   });
 
@@ -1017,7 +1019,7 @@ function BoardView({ tasks, setTasks, apiUpdateTask, apiUpdateSub, apiAddTask, a
             const isDraggingTask = taskDrag.dragging === ti;
 
             // Sub drag for this task's subitems
-            const subReorder = (newSubs) => setTasks(prev => prev.map(t => t.id === task.id ? { ...t, subitems: newSubs } : t));
+            const subReorder = (newSubs) => { setTasks(prev => prev.map(t => t.id === task.id ? { ...t, subitems: newSubs } : t)); if (apiReorderSubitems) apiReorderSubitems(task.id, newSubs.map(s => s.id)); };
 
             return (
               <div key={task.id}>
@@ -2471,6 +2473,14 @@ function Dashboard({ currentUser, onLogout }) {
     apiCall("/columns/reorder", { method: "PUT", body: JSON.stringify({ order: orderedIds }) });
   };
 
+  const apiReorderTasks = (orderedIds) => {
+    apiCall("/tasks/reorder", { method: "PUT", body: JSON.stringify({ order: orderedIds }) });
+  };
+
+  const apiReorderSubitems = (taskId, orderedIds) => {
+    apiCall("/subitems/reorder", { method: "PUT", body: JSON.stringify({ taskId, order: orderedIds }) });
+  };
+
   const apiAddSubColumn = (col) => {
     const withScope = { ...col, scope: "subitem" };
     setSubColumns(prev => [...prev, withScope]);
@@ -2690,7 +2700,7 @@ function Dashboard({ currentUser, onLogout }) {
       {/* CONTENT */}
       <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
         <div style={{ flex: 1, overflow: "auto", padding: 14 }}>
-          {view === "board" && <BoardView tasks={tasks} setTasks={setTasks} apiUpdateTask={apiUpdateTask} apiUpdateSub={apiUpdateSub} apiAddTask={apiAddTask} apiAddSubitem={apiAddSubitem} search={search} allPeople={allPeople} columns={columns} setColumns={setColumns} apiUpdateColumn={apiUpdateColumn} apiDeleteColumn={apiDeleteColumn} apiReorderColumns={apiReorderColumns} setShowAddCol={setShowAddCol} subColumns={subColumns} setSubColumns={setSubColumns} apiUpdateSubColumn={apiUpdateSubColumn} apiDeleteSubColumn={apiDeleteSubColumn} setShowAddSubCol={setShowAddSubCol} onOpenUpdates={openUpdates} perms={perms} />}
+          {view === "board" && <BoardView tasks={tasks} setTasks={setTasks} apiUpdateTask={apiUpdateTask} apiUpdateSub={apiUpdateSub} apiAddTask={apiAddTask} apiAddSubitem={apiAddSubitem} search={search} allPeople={allPeople} columns={columns} setColumns={setColumns} apiUpdateColumn={apiUpdateColumn} apiDeleteColumn={apiDeleteColumn} apiReorderColumns={apiReorderColumns} apiReorderTasks={apiReorderTasks} apiReorderSubitems={apiReorderSubitems} setShowAddCol={setShowAddCol} subColumns={subColumns} setSubColumns={setSubColumns} apiUpdateSubColumn={apiUpdateSubColumn} apiDeleteSubColumn={apiDeleteSubColumn} setShowAddSubCol={setShowAddSubCol} onOpenUpdates={openUpdates} perms={perms} />}
           {view === "kanban" && <KanbanView tasks={tasks} setTasks={setTasks} apiUpdateTask={apiUpdateTask} search={search} allPeople={allPeople} onOpenUpdates={openUpdates} />}
           {view === "timeline" && <TimelineView tasks={tasks} search={search} />}
         </div>
