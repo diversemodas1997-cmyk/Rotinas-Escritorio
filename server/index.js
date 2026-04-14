@@ -40,7 +40,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS columns_config (
     id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL, field TEXT NOT NULL,
     built_in INTEGER DEFAULT 0, is_deadline INTEGER DEFAULT 0, width TEXT DEFAULT '80px', sort_order INTEGER DEFAULT 0,
-    scope TEXT DEFAULT 'task', parent_column_id TEXT
+    scope TEXT DEFAULT 'task', parent_column_id TEXT, task_id TEXT
   );
   CREATE TABLE IF NOT EXISTS updates (
     id TEXT PRIMARY KEY, target_type TEXT NOT NULL, target_id TEXT NOT NULL,
@@ -58,6 +58,7 @@ db.exec(`
   const cols = db.prepare("PRAGMA table_info(columns_config)").all().map(c => c.name);
   if (!cols.includes('scope')) db.exec("ALTER TABLE columns_config ADD COLUMN scope TEXT DEFAULT 'task'");
   if (!cols.includes('parent_column_id')) db.exec("ALTER TABLE columns_config ADD COLUMN parent_column_id TEXT");
+  if (!cols.includes('task_id')) db.exec("ALTER TABLE columns_config ADD COLUMN task_id TEXT");
 })();
 
 function seedDatabase() {
@@ -168,9 +169,9 @@ app.post('/api/subitems',auth,(req,res)=>{const{id,task_id,name,owner,status,res
 app.post('/api/updates',auth,(req,res)=>{const{id,targetType,targetId,text,mentions,files}=req.body;db.prepare('INSERT INTO updates (id,target_type,target_id,author,text,mentions,files) VALUES(?,?,?,?,?,?,?)').run(id,targetType,targetId,req.user.name,text||'',JSON.stringify(mentions||[]),JSON.stringify(files||[]));res.json({success:true});});
 app.delete('/api/updates/:id',auth,(req,res)=>{const u=db.prepare('SELECT author FROM updates WHERE id=?').get(req.params.id);if(!u)return res.status(404).json({error:'Relatório não encontrado'});if(u.author!==req.user.name&&req.user.role!=='admin')return res.status(403).json({error:'Apenas o autor pode excluir'});db.prepare('DELETE FROM updates WHERE id=?').run(req.params.id);res.json({success:true});});
 
-app.get('/api/columns',auth,(req,res)=>res.json(db.prepare('SELECT * FROM columns_config ORDER BY sort_order').all().map(c=>({id:c.id,name:c.name,type:c.type,field:c.field,builtIn:!!c.built_in,isDeadline:!!c.is_deadline,width:c.width,scope:c.scope||'task',parentColumnId:c.parent_column_id||null}))));
+app.get('/api/columns',auth,(req,res)=>res.json(db.prepare('SELECT * FROM columns_config ORDER BY sort_order').all().map(c=>({id:c.id,name:c.name,type:c.type,field:c.field,builtIn:!!c.built_in,isDeadline:!!c.is_deadline,width:c.width,scope:c.scope||'task',parentColumnId:c.parent_column_id||null,taskId:c.task_id||null}))));
 app.put('/api/columns/reorder',auth,(req,res)=>{const{order}=req.body;if(!Array.isArray(order))return res.status(400).json({error:'order deve ser array'});const upd=db.prepare('UPDATE columns_config SET sort_order=? WHERE id=?');const tx=db.transaction((ids)=>{ids.forEach((id,i)=>upd.run(i,id));});tx(order);res.json({success:true});});
-app.post('/api/columns',auth,(req,res)=>{const{id,name,type,field,isDeadline,width,scope,parentColumnId}=req.body;const m=db.prepare('SELECT MAX(sort_order) as m FROM columns_config').get().m||0;db.prepare('INSERT INTO columns_config (id,name,type,field,built_in,is_deadline,width,sort_order,scope,parent_column_id) VALUES(?,?,?,?,0,?,?,?,?,?)').run(id,name,type,field,isDeadline?1:0,width||'80px',m+1,scope||'task',parentColumnId||null);res.json({success:true});});
+app.post('/api/columns',auth,(req,res)=>{const{id,name,type,field,isDeadline,width,scope,parentColumnId,taskId}=req.body;const m=db.prepare('SELECT MAX(sort_order) as m FROM columns_config').get().m||0;db.prepare('INSERT INTO columns_config (id,name,type,field,built_in,is_deadline,width,sort_order,scope,parent_column_id,task_id) VALUES(?,?,?,?,0,?,?,?,?,?,?)').run(id,name,type,field,isDeadline?1:0,width||'80px',m+1,scope||'task',parentColumnId||null,taskId||null);res.json({success:true});});
 app.put('/api/columns/:id',auth,(req,res)=>{const{name,isDeadline,width,type,parentColumnId}=req.body;if(name)db.prepare('UPDATE columns_config SET name=? WHERE id=?').run(name,req.params.id);if(isDeadline!==undefined)db.prepare('UPDATE columns_config SET is_deadline=? WHERE id=?').run(isDeadline?1:0,req.params.id);if(width)db.prepare('UPDATE columns_config SET width=? WHERE id=?').run(width,req.params.id);if(type)db.prepare('UPDATE columns_config SET type=? WHERE id=?').run(type,req.params.id);if(parentColumnId!==undefined)db.prepare('UPDATE columns_config SET parent_column_id=? WHERE id=?').run(parentColumnId||null,req.params.id);res.json({success:true});});
 app.delete('/api/columns/:id',auth,adminOnly,(req,res)=>{const c=db.prepare('SELECT built_in FROM columns_config WHERE id=?').get(req.params.id);if(c?.built_in)return res.status(400).json({error:'Não pode excluir nativa'});db.prepare('DELETE FROM columns_config WHERE id=?').run(req.params.id);res.json({success:true});});
 

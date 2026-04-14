@@ -921,7 +921,7 @@ function InlineAddRow({ placeholder, onAdd, gridCols, cellBorder, cellStyle, acc
 }
 
 // ─── BOARD VIEW (Monday.com style) ───────────────────────────────────────────
-function BoardView({ tasks, setTasks, apiUpdateTask, apiUpdateSub, apiAddTask, apiAddSubitem, search, allPeople, columns, setColumns, apiUpdateColumn, apiDeleteColumn, apiReorderColumns, apiReorderTasks, apiReorderSubitems, setShowAddCol, subColumns, setSubColumns, apiUpdateSubColumn, apiDeleteSubColumn, setShowAddSubCol, onOpenUpdates, perms = {} }) {
+function BoardView({ tasks, setTasks, apiUpdateTask, apiUpdateSub, apiAddTask, apiAddSubitem, search, allPeople, columns, setColumns, apiUpdateColumn, apiDeleteColumn, apiReorderColumns, apiReorderTasks, apiReorderSubitems, setShowAddCol, subColumns, setSubColumns, apiUpdateSubColumn, apiDeleteSubColumn, setShowAddSubCol, setActiveSubColTaskId, onOpenUpdates, perms = {} }) {
   const [expanded, setExpanded] = useState({});
   const [selected, setSelected] = useState({});
   const [groupOpen, setGroupOpen] = useState(true);
@@ -953,8 +953,7 @@ function BoardView({ tasks, setTasks, apiUpdateTask, apiUpdateSub, apiAddTask, a
   const allCols = columns;
   const colWidths = allCols.map(c => c.width || "80px").join(" ");
   const gridCols = `20px 32px 24px 28px ${taskColWidth}px ${colWidths} 32px`;
-  const subExtraCols = subColumns.length > 0 ? " " + subColumns.map(c => c.width || "80px").join(" ") : "";
-  const subGridCols = `20px 28px ${taskColWidth}px ${colWidths}${subExtraCols} 32px`;
+  const subBaseCols = `20px 28px ${taskColWidth}px ${colWidths}`;
 
   const cellBorder = "1px solid #2a2d35";
   const hdrStyle = (extra = {}) => ({ padding: "0 6px", fontSize: 11, fontWeight: 600, color: "#9ca6b5", background: "#1e2028", borderBottom: "1px solid #333", borderRight: cellBorder, display: "flex", alignItems: "center", justifyContent: "center", height: 36, textAlign: "center", position: "relative", ...extra });
@@ -1064,7 +1063,7 @@ function BoardView({ tasks, setTasks, apiUpdateTask, apiUpdateSub, apiAddTask, a
                   {/* Dynamic columns */}
                   {allCols.map(col => (
                     <div key={col.id} style={cellStyle()}>
-                      <CellRenderer col={col} item={task} onChange={ni => upTask(task.id, ni)} allPeople={allPeople} subitems={task.subitems} subColumns={subColumns} />
+                      <CellRenderer col={col} item={task} onChange={ni => upTask(task.id, ni)} allPeople={allPeople} subitems={task.subitems} subColumns={subColumns.filter(sc => sc.taskId === task.id)} />
                     </div>
                   ))}
 
@@ -1073,7 +1072,7 @@ function BoardView({ tasks, setTasks, apiUpdateTask, apiUpdateSub, apiAddTask, a
 
                 {/* ── SUBITEMS ── */}
                 {isOpen && (
-                  <SubitemsBlock task={task} allCols={allCols} subColumns={subColumns} setSubColumns={setSubColumns} apiUpdateSubColumn={apiUpdateSubColumn} apiDeleteSubColumn={apiDeleteSubColumn} setColumns={setColumns} apiUpdateColumn={apiUpdateColumn} apiDeleteColumn={apiDeleteColumn} subGridCols={subGridCols} cellBorder={cellBorder} hdrStyle={hdrStyle} cellStyle={cellStyle} upSub={upSub} onOpenUpdates={onOpenUpdates} allPeople={allPeople} perms={perms} setShowAddSubCol={setShowAddSubCol} subReorder={subReorder} apiAddSubitem={apiAddSubitem} />
+                  <SubitemsBlock task={task} allCols={allCols} subColumns={subColumns} setSubColumns={setSubColumns} apiUpdateSubColumn={apiUpdateSubColumn} apiDeleteSubColumn={apiDeleteSubColumn} setColumns={setColumns} apiUpdateColumn={apiUpdateColumn} apiDeleteColumn={apiDeleteColumn} subBaseCols={subBaseCols} cellBorder={cellBorder} hdrStyle={hdrStyle} cellStyle={cellStyle} upSub={upSub} onOpenUpdates={onOpenUpdates} allPeople={allPeople} perms={perms} setShowAddSubCol={setShowAddSubCol} setActiveSubColTaskId={setActiveSubColTaskId} subReorder={subReorder} apiAddSubitem={apiAddSubitem} />
                 )}
               </div>
             );
@@ -1092,9 +1091,12 @@ function BoardView({ tasks, setTasks, apiUpdateTask, apiUpdateSub, apiAddTask, a
 }
 
 // Extracted subitems block to use its own drag hook
-function SubitemsBlock({ task, allCols, subColumns, setSubColumns, apiUpdateSubColumn, apiDeleteSubColumn, setColumns, apiUpdateColumn, apiDeleteColumn, subGridCols, cellBorder, hdrStyle, cellStyle, upSub, onOpenUpdates, allPeople, perms, setShowAddSubCol, subReorder, apiAddSubitem }) {
+function SubitemsBlock({ task, allCols, subColumns, setSubColumns, apiUpdateSubColumn, apiDeleteSubColumn, setColumns, apiUpdateColumn, apiDeleteColumn, subBaseCols, cellBorder, hdrStyle, cellStyle, upSub, onOpenUpdates, allPeople, perms, setShowAddSubCol, setActiveSubColTaskId, subReorder, apiAddSubitem }) {
   const subDrag = useDragReorder(task.subitems, subReorder);
   const resizeC = (colId, newW, setter) => setter(prev => prev.map(c => c.id === colId ? { ...c, width: newW + "px" } : c));
+  const taskSubColumns = subColumns.filter(sc => sc.taskId === task.id);
+  const subExtraCols = taskSubColumns.length > 0 ? " " + taskSubColumns.map(c => c.width || "80px").join(" ") : "";
+  const subGridCols = `${subBaseCols}${subExtraCols} 32px`;
 
   return (
     <div>
@@ -1116,14 +1118,14 @@ function SubitemsBlock({ task, allCols, subColumns, setSubColumns, apiUpdateSubC
             <ResizeHandle onResize={(w) => resizeC(col.id, w, setColumns)} />
           </div>
         ))}
-        {subColumns.map(sc => (
+        {taskSubColumns.map(sc => (
           <div key={sc.id} style={{ ...hdrStyle({ height: 34, fontSize: 10, background: "#191b20" }) }}>
             <ColHeader col={sc}
               onRename={v => apiUpdateSubColumn ? apiUpdateSubColumn(sc.id, { name: v }) : setSubColumns(p => p.map(c => c.id === sc.id ? { ...c, name: v } : c))}
               onDelete={perms.deleteColumns ? () => apiDeleteSubColumn ? apiDeleteSubColumn(sc.id) : setSubColumns(p => p.filter(c => c.id !== sc.id)) : null}
               onToggleDeadline={() => apiUpdateSubColumn ? apiUpdateSubColumn(sc.id, { isDeadline: !sc.isDeadline }) : setSubColumns(p => p.map(c => c.id === sc.id ? { ...c, isDeadline: !c.isDeadline } : c))}
               onChangeType={(newType) => apiUpdateSubColumn ? apiUpdateSubColumn(sc.id, { type: newType, isDeadline: newType === "date" ? sc.isDeadline : false }) : setSubColumns(p => p.map(c => c.id === sc.id ? { ...c, type: newType, isDeadline: newType === "date" ? c.isDeadline : false } : c))}
-              onDuplicate={() => { const newId = "col_" + Date.now(); const dup = { ...sc, id: newId, field: newId, name: sc.name + " (cópia)", builtIn: false }; setSubColumns(p => [...p, dup]); apiCall("/columns", { method: "POST", body: JSON.stringify(dup) }); }}
+              onDuplicate={() => { const newId = "col_" + Date.now(); const dup = { ...sc, id: newId, field: newId, name: sc.name + " (cópia)", builtIn: false, taskId: task.id }; setSubColumns(p => [...p, dup]); apiCall("/columns", { method: "POST", body: JSON.stringify(dup) }); }}
               canDelete={perms.deleteColumns}
             />
             <ResizeHandle onResize={(w) => resizeC(sc.id, w, setSubColumns)} />
@@ -1155,9 +1157,9 @@ function SubitemsBlock({ task, allCols, subColumns, setSubColumns, apiUpdateSubC
             <EditText value={sub.name} onChange={v => upSub(task.id, sub.id, { ...sub, name: v })} style={{ color: "#b8bcc4", fontSize: 12.5 }} />
           </div>
           {allCols.map(col => <div key={col.id} style={cellStyle()}><CellRenderer col={col} item={sub} onChange={ns => upSub(task.id, sub.id, ns)} allPeople={allPeople} small /></div>)}
-          {subColumns.map(sc => <div key={sc.id} style={cellStyle()}><CellRenderer col={sc} item={sub} onChange={ns => upSub(task.id, sub.id, ns)} allPeople={allPeople} small /></div>)}
+          {taskSubColumns.map(sc => <div key={sc.id} style={cellStyle()}><CellRenderer col={sc} item={sub} onChange={ns => upSub(task.id, sub.id, ns)} allPeople={allPeople} small /></div>)}
           {perms.addColumns ? (
-            <div onClick={() => setShowAddSubCol(true)} style={{ ...cellStyle({ borderRight: "none", cursor: "pointer", color: "#579bfc", fontSize: 13, fontWeight: 700, opacity: 0.4 }) }}
+            <div onClick={() => { if (setActiveSubColTaskId) setActiveSubColTaskId(task.id); setShowAddSubCol(true); }} style={{ ...cellStyle({ borderRight: "none", cursor: "pointer", color: "#579bfc", fontSize: 13, fontWeight: 700, opacity: 0.4 }) }}
               onMouseEnter={e => e.currentTarget.style.opacity = 1} onMouseLeave={e => e.currentTarget.style.opacity = 0.4}>+</div>
           ) : <div style={{ ...cellStyle({ borderRight: "none" }) }} />}
         </div>
@@ -2365,6 +2367,7 @@ function Dashboard({ currentUser, onLogout }) {
   const [showAddTask, setShowAddTask] = useState(false);
   const [showAddCol, setShowAddCol] = useState(false);
   const [showAddSubCol, setShowAddSubCol] = useState(false);
+  const [activeSubColTaskId, setActiveSubColTaskId] = useState(null);
   const [subColumns, setSubColumns] = useState([]);
   const [automations, setAutomations] = useState([]);
   const [updatesTarget, setUpdatesTarget] = useState(null);
@@ -2482,7 +2485,7 @@ function Dashboard({ currentUser, onLogout }) {
   };
 
   const apiAddSubColumn = (col) => {
-    const withScope = { ...col, scope: "subitem" };
+    const withScope = { ...col, scope: "subitem", taskId: col.taskId || activeSubColTaskId || null };
     setSubColumns(prev => [...prev, withScope]);
     apiCall("/columns", { method: "POST", body: JSON.stringify(withScope) });
   };
@@ -2700,7 +2703,7 @@ function Dashboard({ currentUser, onLogout }) {
       {/* CONTENT */}
       <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
         <div style={{ flex: 1, overflow: "auto", padding: 14 }}>
-          {view === "board" && <BoardView tasks={tasks} setTasks={setTasks} apiUpdateTask={apiUpdateTask} apiUpdateSub={apiUpdateSub} apiAddTask={apiAddTask} apiAddSubitem={apiAddSubitem} search={search} allPeople={allPeople} columns={columns} setColumns={setColumns} apiUpdateColumn={apiUpdateColumn} apiDeleteColumn={apiDeleteColumn} apiReorderColumns={apiReorderColumns} apiReorderTasks={apiReorderTasks} apiReorderSubitems={apiReorderSubitems} setShowAddCol={setShowAddCol} subColumns={subColumns} setSubColumns={setSubColumns} apiUpdateSubColumn={apiUpdateSubColumn} apiDeleteSubColumn={apiDeleteSubColumn} setShowAddSubCol={setShowAddSubCol} onOpenUpdates={openUpdates} perms={perms} />}
+          {view === "board" && <BoardView tasks={tasks} setTasks={setTasks} apiUpdateTask={apiUpdateTask} apiUpdateSub={apiUpdateSub} apiAddTask={apiAddTask} apiAddSubitem={apiAddSubitem} search={search} allPeople={allPeople} columns={columns} setColumns={setColumns} apiUpdateColumn={apiUpdateColumn} apiDeleteColumn={apiDeleteColumn} apiReorderColumns={apiReorderColumns} apiReorderTasks={apiReorderTasks} apiReorderSubitems={apiReorderSubitems} setShowAddCol={setShowAddCol} subColumns={subColumns} setSubColumns={setSubColumns} apiUpdateSubColumn={apiUpdateSubColumn} apiDeleteSubColumn={apiDeleteSubColumn} setShowAddSubCol={setShowAddSubCol} setActiveSubColTaskId={setActiveSubColTaskId} onOpenUpdates={openUpdates} perms={perms} />}
           {view === "kanban" && <KanbanView tasks={tasks} setTasks={setTasks} apiUpdateTask={apiUpdateTask} search={search} allPeople={allPeople} onOpenUpdates={openUpdates} />}
           {view === "timeline" && <TimelineView tasks={tasks} search={search} />}
         </div>
