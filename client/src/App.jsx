@@ -252,15 +252,25 @@ function PriorityBadge({ priority, onClick }) {
   const p = PRIORITY_COLORS[priority] || PRIORITY_COLORS["Média"];
   return <div onClick={onClick} style={{ background: p.bg, color: p.text, padding: "6px 0", borderRadius: 0, fontSize: 12, fontWeight: 600, textAlign: "center", width: "100%", cursor: onClick ? "pointer" : "default", userSelect: "none" }}>{priority}</div>;
 }
-function CellRenderer({ col, item, onChange, allPeople, small, subitems }) {
+function CellRenderer({ col, item, onChange, allPeople, small, subitems, subColumns }) {
   const val = getVal(item, col);
   const update = (v) => onChange(setVal(item, col, v));
 
-  // Auto-sum for task-level built-in number columns that aggregate from subitems
-  if (col.type === "number" && col.builtIn && subitems && subitems.length > 0) {
-    const sumField = col.field === "totalOrders" ? "total" : col.field === "totalCancellations" ? "cancellations" : null;
-    if (sumField) {
-      const sum = subitems.reduce((a, s) => a + (s[sumField] || 0), 0);
+  // Auto-sum for task-level number columns that aggregate from subitems.
+  // Built-in: totalOrders ← sum(total), totalCancellations ← sum(cancellations).
+  // Custom:   any subColumn with parentColumnId === col.id, reading sub.custom[childField].
+  if (col.type === "number" && subitems && subitems.length > 0) {
+    let sum = null;
+    if (col.builtIn) {
+      const sumField = col.field === "totalOrders" ? "total" : col.field === "totalCancellations" ? "cancellations" : null;
+      if (sumField) sum = subitems.reduce((a, s) => a + (Number(s[sumField]) || 0), 0);
+    } else if (subColumns && subColumns.length > 0) {
+      const children = subColumns.filter(sc => sc.parentColumnId === col.id && sc.type === "number");
+      if (children.length > 0) {
+        sum = subitems.reduce((a, s) => a + children.reduce((b, cc) => b + (Number((s.custom || {})[cc.field]) || 0), 0), 0);
+      }
+    }
+    if (sum !== null) {
       return (
         <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
           <span style={{ fontSize: 13, fontWeight: 600, color: sum > 0 ? "#e8eaed" : "#555" }}>{sum || "—"}</span>
@@ -760,11 +770,12 @@ function ColHeader({ col, onRename, onDelete, onToggleDeadline, onChangeType, on
 }
 
 // ─── ADD COLUMN MODAL ────────────────────────────────────────────────────────
-function AddColumnModal({ onClose, onAdd, columns, title: modalTitle }) {
-  const [name, setName] = useState(""); const [type, setType] = useState("text"); const [isDeadline, setIsDeadline] = useState(false); const [copyFrom, setCopyFrom] = useState("");
+function AddColumnModal({ onClose, onAdd, columns, title: modalTitle, linkParent }) {
+  const [name, setName] = useState(""); const [type, setType] = useState("text"); const [isDeadline, setIsDeadline] = useState(false); const [copyFrom, setCopyFrom] = useState(""); const [parentFor, setParentFor] = useState("");
   const types = [{ value: "text", label: "Texto", icon: "📝" }, { value: "number", label: "Número", icon: "🔢" }, { value: "date", label: "Data", icon: "📅" }, { value: "status", label: "Status", icon: "🔵" }, { value: "people", label: "Pessoas", icon: "👥" }, { value: "priority", label: "Prioridade", icon: "🔴" }];
-  const handleAdd = () => { if (!name.trim()) return; const id = "col_" + Date.now(); onAdd({ id, name: name.trim(), type, field: id, builtIn: false, isDeadline: type === "date" && isDeadline, width: type === "people" ? "110px" : type === "status" || type === "priority" ? "110px" : type === "date" ? "100px" : "80px" }); onClose(); };
-  const handleCopy = () => { if (!copyFrom) return; const src = columns.find(c => c.id === copyFrom); if (!src) return; const id = "col_" + Date.now(); onAdd({ ...src, id, field: id, name: src.name + " (cópia)", builtIn: false }); onClose(); };
+  const numericParents = linkParent ? columns.filter(c => c.type === "number") : [];
+  const handleAdd = () => { if (!name.trim()) return; const id = "col_" + Date.now(); const col = { id, name: name.trim(), type, field: id, builtIn: false, isDeadline: type === "date" && isDeadline, width: type === "people" ? "110px" : type === "status" || type === "priority" ? "110px" : type === "date" ? "100px" : "80px" }; if (linkParent && type === "number" && parentFor) col.parentColumnId = parentFor; onAdd(col); onClose(); };
+  const handleCopy = () => { if (!copyFrom) return; const src = columns.find(c => c.id === copyFrom); if (!src) return; const id = "col_" + Date.now(); const col = { ...src, id, field: id, name: src.name + " (cópia)", builtIn: false }; if (linkParent) col.parentColumnId = src.id; onAdd(col); onClose(); };
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, backdropFilter: "blur(4px)" }} onClick={onClose}>
       <div style={{ background: "#23262e", borderRadius: 14, padding: 26, width: 440, maxWidth: "92vw", border: "1px solid #333" }} onClick={e => e.stopPropagation()}>
@@ -782,6 +793,15 @@ function AddColumnModal({ onClose, onAdd, columns, title: modalTitle }) {
           {types.map(t => (<div key={t.value} onClick={() => setType(t.value)} style={{ padding: "10px 8px", borderRadius: 8, border: type === t.value ? "2px solid #6c5ce7" : "1px solid #3a3d45", background: type === t.value ? "rgba(108,92,231,.12)" : "#1a1d23", cursor: "pointer", textAlign: "center" }}><div style={{ fontSize: 18 }}>{t.icon}</div><div style={{ fontSize: 11, fontWeight: 600, color: "#e8eaed", marginTop: 2 }}>{t.label}</div></div>))}
         </div>
         {type === "date" && (<div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 10px", background: "#1a1d23", borderRadius: 8, marginBottom: 12, border: "1px solid #333" }}><div><div style={{ fontSize: 12, fontWeight: 600, color: "#e8eaed" }}>Usar como prazo</div></div><div onClick={() => setIsDeadline(!isDeadline)} style={{ width: 36, height: 18, borderRadius: 9, background: isDeadline ? "#6c5ce7" : "#444", cursor: "pointer", position: "relative" }}><div style={{ width: 14, height: 14, borderRadius: "50%", background: "#fff", position: "absolute", top: 2, left: isDeadline ? 20 : 2, transition: "left .2s" }} /></div></div>)}
+        {linkParent && type === "number" && numericParents.length > 0 && (
+          <div style={{ padding: "8px 10px", background: "#1a1d23", borderRadius: 8, marginBottom: 12, border: "1px solid #333" }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: "#a5b1c2", marginBottom: 6 }}>Σ Somar na coluna pai</div>
+            <select value={parentFor} onChange={e => setParentFor(e.target.value)} style={{ width: "100%", padding: "7px 9px", borderRadius: 6, border: "1px solid #444", background: "#13151a", color: "#e8eaed", fontSize: 12 }}>
+              <option value="">Nenhuma (coluna independente)</option>
+              {numericParents.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </div>
+        )}
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
           <button onClick={onClose} style={{ padding: "9px 18px", borderRadius: 8, border: "1px solid #444", background: "transparent", color: "#a5b1c2", fontSize: 13, cursor: "pointer" }}>Cancelar</button>
           <button onClick={handleAdd} disabled={!name.trim()} style={{ padding: "9px 22px", borderRadius: 8, border: "none", background: name.trim() ? "#6c5ce7" : "#333", color: "#fff", fontSize: 13, fontWeight: 600, cursor: name.trim() ? "pointer" : "default" }}>Adicionar</button>
@@ -901,7 +921,7 @@ function InlineAddRow({ placeholder, onAdd, gridCols, cellBorder, cellStyle, acc
 }
 
 // ─── BOARD VIEW (Monday.com style) ───────────────────────────────────────────
-function BoardView({ tasks, setTasks, apiUpdateTask, apiUpdateSub, apiAddTask, apiAddSubitem, search, allPeople, columns, setColumns, apiUpdateColumn, apiDeleteColumn, setShowAddCol, subColumns, setSubColumns, setShowAddSubCol, onOpenUpdates, perms = {} }) {
+function BoardView({ tasks, setTasks, apiUpdateTask, apiUpdateSub, apiAddTask, apiAddSubitem, search, allPeople, columns, setColumns, apiUpdateColumn, apiDeleteColumn, setShowAddCol, subColumns, setSubColumns, apiUpdateSubColumn, apiDeleteSubColumn, setShowAddSubCol, onOpenUpdates, perms = {} }) {
   const [expanded, setExpanded] = useState({});
   const [selected, setSelected] = useState({});
   const [groupOpen, setGroupOpen] = useState(true);
@@ -1042,7 +1062,7 @@ function BoardView({ tasks, setTasks, apiUpdateTask, apiUpdateSub, apiAddTask, a
                   {/* Dynamic columns */}
                   {allCols.map(col => (
                     <div key={col.id} style={cellStyle()}>
-                      <CellRenderer col={col} item={task} onChange={ni => upTask(task.id, ni)} allPeople={allPeople} subitems={task.subitems} />
+                      <CellRenderer col={col} item={task} onChange={ni => upTask(task.id, ni)} allPeople={allPeople} subitems={task.subitems} subColumns={subColumns} />
                     </div>
                   ))}
 
@@ -1051,7 +1071,7 @@ function BoardView({ tasks, setTasks, apiUpdateTask, apiUpdateSub, apiAddTask, a
 
                 {/* ── SUBITEMS ── */}
                 {isOpen && (
-                  <SubitemsBlock task={task} allCols={allCols} subColumns={subColumns} setSubColumns={setSubColumns} setColumns={setColumns} subGridCols={subGridCols} cellBorder={cellBorder} hdrStyle={hdrStyle} cellStyle={cellStyle} upSub={upSub} onOpenUpdates={onOpenUpdates} allPeople={allPeople} perms={perms} setShowAddSubCol={setShowAddSubCol} subReorder={subReorder} apiAddSubitem={apiAddSubitem} />
+                  <SubitemsBlock task={task} allCols={allCols} subColumns={subColumns} setSubColumns={setSubColumns} apiUpdateSubColumn={apiUpdateSubColumn} apiDeleteSubColumn={apiDeleteSubColumn} setColumns={setColumns} subGridCols={subGridCols} cellBorder={cellBorder} hdrStyle={hdrStyle} cellStyle={cellStyle} upSub={upSub} onOpenUpdates={onOpenUpdates} allPeople={allPeople} perms={perms} setShowAddSubCol={setShowAddSubCol} subReorder={subReorder} apiAddSubitem={apiAddSubitem} />
                 )}
               </div>
             );
@@ -1070,7 +1090,7 @@ function BoardView({ tasks, setTasks, apiUpdateTask, apiUpdateSub, apiAddTask, a
 }
 
 // Extracted subitems block to use its own drag hook
-function SubitemsBlock({ task, allCols, subColumns, setSubColumns, setColumns, subGridCols, cellBorder, hdrStyle, cellStyle, upSub, onOpenUpdates, allPeople, perms, setShowAddSubCol, subReorder, apiAddSubitem }) {
+function SubitemsBlock({ task, allCols, subColumns, setSubColumns, apiUpdateSubColumn, apiDeleteSubColumn, setColumns, subGridCols, cellBorder, hdrStyle, cellStyle, upSub, onOpenUpdates, allPeople, perms, setShowAddSubCol, subReorder, apiAddSubitem }) {
   const subDrag = useDragReorder(task.subitems, subReorder);
   const resizeC = (colId, newW, setter) => setter(prev => prev.map(c => c.id === colId ? { ...c, width: newW + "px" } : c));
 
@@ -1090,11 +1110,11 @@ function SubitemsBlock({ task, allCols, subColumns, setSubColumns, setColumns, s
         {subColumns.map(sc => (
           <div key={sc.id} style={{ ...hdrStyle({ height: 28, fontSize: 10, background: "#191b20" }) }}>
             <ColHeader col={sc}
-              onRename={v => setSubColumns(p => p.map(c => c.id === sc.id ? { ...c, name: v } : c))}
-              onDelete={perms.deleteColumns ? () => setSubColumns(p => p.filter(c => c.id !== sc.id)) : null}
-              onToggleDeadline={() => setSubColumns(p => p.map(c => c.id === sc.id ? { ...c, isDeadline: !c.isDeadline } : c))}
-              onChangeType={(newType) => setSubColumns(p => p.map(c => c.id === sc.id ? { ...c, type: newType, isDeadline: newType === "date" ? c.isDeadline : false } : c))}
-              onDuplicate={() => { const newId = "col_" + Date.now(); setSubColumns(p => [...p, { ...sc, id: newId, field: newId, name: sc.name + " (cópia)", builtIn: false }]); }}
+              onRename={v => apiUpdateSubColumn ? apiUpdateSubColumn(sc.id, { name: v }) : setSubColumns(p => p.map(c => c.id === sc.id ? { ...c, name: v } : c))}
+              onDelete={perms.deleteColumns ? () => apiDeleteSubColumn ? apiDeleteSubColumn(sc.id) : setSubColumns(p => p.filter(c => c.id !== sc.id)) : null}
+              onToggleDeadline={() => apiUpdateSubColumn ? apiUpdateSubColumn(sc.id, { isDeadline: !sc.isDeadline }) : setSubColumns(p => p.map(c => c.id === sc.id ? { ...c, isDeadline: !c.isDeadline } : c))}
+              onChangeType={(newType) => apiUpdateSubColumn ? apiUpdateSubColumn(sc.id, { type: newType, isDeadline: newType === "date" ? sc.isDeadline : false }) : setSubColumns(p => p.map(c => c.id === sc.id ? { ...c, type: newType, isDeadline: newType === "date" ? c.isDeadline : false } : c))}
+              onDuplicate={() => { const newId = "col_" + Date.now(); const dup = { ...sc, id: newId, field: newId, name: sc.name + " (cópia)", builtIn: false }; setSubColumns(p => [...p, dup]); apiCall("/columns", { method: "POST", body: JSON.stringify(dup) }); }}
               canDelete={perms.deleteColumns}
             />
             <ResizeHandle onResize={(w) => resizeC(sc.id, w, setSubColumns)} />
@@ -2361,7 +2381,10 @@ function Dashboard({ currentUser, onLogout }) {
       if (!mounted) return;
       if (tasksData) setTasks(tasksData.map(t => ({ ...t, custom: t.custom || {}, updates: t.updates || [], subitems: (t.subitems || []).map(s => ({ ...s, custom: s.custom || {}, updates: s.updates || [], cancellations: s.cancellations || 0 })) })));
       else setTasks(INITIAL_TASKS); // fallback
-      if (colsData) setColumns(colsData);
+      if (colsData) {
+        setColumns(colsData.filter(c => (c.scope || 'task') === 'task'));
+        setSubColumns(colsData.filter(c => c.scope === 'subitem'));
+      }
       if (usersData) setUsers(usersData.map(u => ({ ...u, password: "******" })));
       else setUsers(REGISTERED_USERS);
       if (autoData) setAutomations(autoData);
@@ -2434,6 +2457,20 @@ function Dashboard({ currentUser, onLogout }) {
 
   const apiDeleteColumn = (colId) => {
     setColumns(prev => prev.filter(c => c.id !== colId));
+    apiCall(`/columns/${colId}`, { method: "DELETE" });
+  };
+
+  const apiAddSubColumn = (col) => {
+    const withScope = { ...col, scope: "subitem" };
+    setSubColumns(prev => [...prev, withScope]);
+    apiCall("/columns", { method: "POST", body: JSON.stringify(withScope) });
+  };
+  const apiUpdateSubColumn = (colId, patch) => {
+    setSubColumns(prev => prev.map(c => c.id === colId ? { ...c, ...patch } : c));
+    apiCall(`/columns/${colId}`, { method: "PUT", body: JSON.stringify(patch) });
+  };
+  const apiDeleteSubColumn = (colId) => {
+    setSubColumns(prev => prev.filter(c => c.id !== colId));
     apiCall(`/columns/${colId}`, { method: "DELETE" });
   };
 
@@ -2642,7 +2679,7 @@ function Dashboard({ currentUser, onLogout }) {
       {/* CONTENT */}
       <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
         <div style={{ flex: 1, overflow: "auto", padding: 14 }}>
-          {view === "board" && <BoardView tasks={tasks} setTasks={setTasks} apiUpdateTask={apiUpdateTask} apiUpdateSub={apiUpdateSub} apiAddTask={apiAddTask} apiAddSubitem={apiAddSubitem} search={search} allPeople={allPeople} columns={columns} setColumns={setColumns} apiUpdateColumn={apiUpdateColumn} apiDeleteColumn={apiDeleteColumn} setShowAddCol={setShowAddCol} subColumns={subColumns} setSubColumns={setSubColumns} setShowAddSubCol={setShowAddSubCol} onOpenUpdates={openUpdates} perms={perms} />}
+          {view === "board" && <BoardView tasks={tasks} setTasks={setTasks} apiUpdateTask={apiUpdateTask} apiUpdateSub={apiUpdateSub} apiAddTask={apiAddTask} apiAddSubitem={apiAddSubitem} search={search} allPeople={allPeople} columns={columns} setColumns={setColumns} apiUpdateColumn={apiUpdateColumn} apiDeleteColumn={apiDeleteColumn} setShowAddCol={setShowAddCol} subColumns={subColumns} setSubColumns={setSubColumns} apiUpdateSubColumn={apiUpdateSubColumn} apiDeleteSubColumn={apiDeleteSubColumn} setShowAddSubCol={setShowAddSubCol} onOpenUpdates={openUpdates} perms={perms} />}
           {view === "kanban" && <KanbanView tasks={tasks} setTasks={setTasks} apiUpdateTask={apiUpdateTask} search={search} allPeople={allPeople} onOpenUpdates={openUpdates} />}
           {view === "timeline" && <TimelineView tasks={tasks} search={search} />}
         </div>
@@ -2656,7 +2693,7 @@ function Dashboard({ currentUser, onLogout }) {
 
       {showAddTask && <AddTaskModal onClose={() => setShowAddTask(false)} onAdd={apiAddTask} allPeople={allPeople} />}
       {showAddCol && perms.addColumns && <AddColumnModal onClose={() => setShowAddCol(false)} onAdd={apiAddColumn} columns={columns} />}
-      {showAddSubCol && perms.addColumns && <AddColumnModal onClose={() => setShowAddSubCol(false)} onAdd={c => setSubColumns(p => [...p, c])} columns={subColumns} title="Adicionar Coluna de Subitem" />}
+      {showAddSubCol && perms.addColumns && <AddColumnModal onClose={() => setShowAddSubCol(false)} onAdd={apiAddSubColumn} columns={columns} title="Adicionar Coluna de Subitem" linkParent />}
       {updatesData && <UpdatesPanel itemName={updatesData.name} updates={updatesData.updates} currentUserName={currentUser.name} onAddUpdate={apiAddUpdate} onDeleteUpdate={apiDeleteUpdate} onEditUpdate={(updateId, newText, newFiles) => {
         if (!updatesTarget) return;
         setTasks(prev => prev.map(t => {
