@@ -59,6 +59,8 @@ db.exec(`
   if (!cols.includes('scope')) db.exec("ALTER TABLE columns_config ADD COLUMN scope TEXT DEFAULT 'task'");
   if (!cols.includes('parent_column_id')) db.exec("ALTER TABLE columns_config ADD COLUMN parent_column_id TEXT");
   if (!cols.includes('task_id')) db.exec("ALTER TABLE columns_config ADD COLUMN task_id TEXT");
+  // Clean up orphan subColumns without task_id (created before per-task scoping)
+  db.prepare("DELETE FROM columns_config WHERE scope='subitem' AND task_id IS NULL").run();
 })();
 
 function seedDatabase() {
