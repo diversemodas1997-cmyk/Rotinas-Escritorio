@@ -691,7 +691,7 @@ function ChatBubble({ count, onClick }) {
 }
 
 // ─── COLUMN HEADER ───────────────────────────────────────────────────────────
-function ColHeader({ col, onRename, onDelete, onToggleDeadline, onChangeType, onDuplicate, canDelete = true }) {
+function ColHeader({ col, onRename, onDelete, onToggleDeadline, onChangeType, onDuplicate, onHide, canDelete = true }) {
   const [menu, setMenu] = useState(false);
   const [showTypeMenu, setShowTypeMenu] = useState(false);
   const ref = useRef(null);
@@ -752,6 +752,9 @@ function ColHeader({ col, onRename, onDelete, onToggleDeadline, onChangeType, on
 
           {/* Duplicate */}
           {onDuplicate && menuItem("📋", "Duplicar coluna", "#579bfc", onDuplicate)}
+
+          {/* Hide in this task */}
+          {onHide && menuItem("🙈", "Ocultar nesta tarefa", "#a5b1c2", onHide)}
 
           {/* Divider before delete */}
           <div style={{ height: 1, background: "#333", margin: "4px 0" }} />
@@ -1072,7 +1075,7 @@ function BoardView({ tasks, setTasks, apiUpdateTask, apiUpdateSub, apiAddTask, a
 
                 {/* ── SUBITEMS ── */}
                 {isOpen && (
-                  <SubitemsBlock task={task} allCols={allCols} subColumns={subColumns} setSubColumns={setSubColumns} apiUpdateSubColumn={apiUpdateSubColumn} apiDeleteSubColumn={apiDeleteSubColumn} setColumns={setColumns} apiUpdateColumn={apiUpdateColumn} apiDeleteColumn={apiDeleteColumn} subBaseCols={subBaseCols} cellBorder={cellBorder} hdrStyle={hdrStyle} cellStyle={cellStyle} upSub={upSub} onOpenUpdates={onOpenUpdates} allPeople={allPeople} perms={perms} setShowAddSubCol={setShowAddSubCol} setActiveSubColTaskId={setActiveSubColTaskId} subReorder={subReorder} apiAddSubitem={apiAddSubitem} />
+                  <SubitemsBlock task={task} allCols={allCols} subColumns={subColumns} setSubColumns={setSubColumns} apiUpdateSubColumn={apiUpdateSubColumn} apiDeleteSubColumn={apiDeleteSubColumn} setColumns={setColumns} apiUpdateColumn={apiUpdateColumn} apiDeleteColumn={apiDeleteColumn} taskColWidth={taskColWidth} cellBorder={cellBorder} hdrStyle={hdrStyle} cellStyle={cellStyle} upTask={upTask} upSub={upSub} onOpenUpdates={onOpenUpdates} allPeople={allPeople} perms={perms} setShowAddSubCol={setShowAddSubCol} setActiveSubColTaskId={setActiveSubColTaskId} subReorder={subReorder} apiAddSubitem={apiAddSubitem} />
                 )}
               </div>
             );
@@ -1091,21 +1094,44 @@ function BoardView({ tasks, setTasks, apiUpdateTask, apiUpdateSub, apiAddTask, a
 }
 
 // Extracted subitems block to use its own drag hook
-function SubitemsBlock({ task, allCols, subColumns, setSubColumns, apiUpdateSubColumn, apiDeleteSubColumn, setColumns, apiUpdateColumn, apiDeleteColumn, subBaseCols, cellBorder, hdrStyle, cellStyle, upSub, onOpenUpdates, allPeople, perms, setShowAddSubCol, setActiveSubColTaskId, subReorder, apiAddSubitem }) {
+function SubitemsBlock({ task, allCols, subColumns, setSubColumns, apiUpdateSubColumn, apiDeleteSubColumn, setColumns, apiUpdateColumn, apiDeleteColumn, taskColWidth, cellBorder, hdrStyle, cellStyle, upTask, upSub, onOpenUpdates, allPeople, perms, setShowAddSubCol, setActiveSubColTaskId, subReorder, apiAddSubitem }) {
   const subDrag = useDragReorder(task.subitems, subReorder);
   const resizeC = (colId, newW, setter) => setter(prev => prev.map(c => c.id === colId ? { ...c, width: newW + "px" } : c));
   const taskSubColumns = subColumns.filter(sc => sc.taskId === task.id);
+  const hiddenCols = (task.custom && task.custom.hiddenSubCols) || [];
+  const visibleAllCols = allCols.filter(c => !hiddenCols.includes(c.id));
+  const HIDEABLE_NATIVE = ["col_orders", "col_cancel"];
+  const hideInTask = (colId) => {
+    const nextHidden = Array.from(new Set([...(hiddenCols), colId]));
+    upTask(task.id, { ...task, custom: { ...(task.custom || {}), hiddenSubCols: nextHidden } });
+  };
+  const unhideInTask = (colId) => {
+    const nextHidden = hiddenCols.filter(id => id !== colId);
+    upTask(task.id, { ...task, custom: { ...(task.custom || {}), hiddenSubCols: nextHidden } });
+  };
+  const colWidths = visibleAllCols.map(c => c.width || "80px").join(" ");
   const subExtraCols = taskSubColumns.length > 0 ? " " + taskSubColumns.map(c => c.width || "80px").join(" ") : "";
-  const subGridCols = `${subBaseCols}${subExtraCols} 32px`;
+  const subGridCols = `20px 28px ${taskColWidth}px ${colWidths}${subExtraCols} 32px`;
 
   return (
     <div>
+      {hiddenCols.length > 0 && (
+        <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 16px", background: "#1a1d23", borderBottom: "1px solid #2a2d35", fontSize: 10, color: "#778ca3" }}>
+          <span>Colunas ocultas nesta tarefa:</span>
+          {hiddenCols.map(cid => { const c = allCols.find(x => x.id === cid); if (!c) return null; return (
+            <span key={cid} onClick={() => unhideInTask(cid)} style={{ cursor: "pointer", background: "#23262e", padding: "2px 8px", borderRadius: 10, border: "1px solid #3a3d45", color: "#9ca6b5", fontWeight: 600 }}
+              onMouseEnter={e => e.currentTarget.style.background = "#2f3340"} onMouseLeave={e => e.currentTarget.style.background = "#23262e"}>
+              ↺ {c.name}
+            </span>
+          ); })}
+        </div>
+      )}
       {/* Subitem column headers — always visible */}
       <div style={{ display: "grid", gridTemplateColumns: subGridCols, gap: 0, background: "#191b20", borderBottom: cellBorder }}>
         <div style={{ borderRight: cellBorder, height: 34 }} />
         <div style={{ borderRight: cellBorder, height: 34 }} />
         <div style={{ ...hdrStyle({ height: 34, fontSize: 10, justifyContent: "flex-start", paddingLeft: 16, background: "#191b20" }) }}>Subitem</div>
-        {allCols.map(col => (
+        {visibleAllCols.map(col => (
           <div key={col.id} style={{ ...hdrStyle({ height: 34, fontSize: 10, background: "#191b20" }) }}>
             <ColHeader col={col}
               onRename={v => { setColumns(p => p.map(c => c.id === col.id ? { ...c, name: v } : c)); if (apiUpdateColumn) apiUpdateColumn(col.id, { name: v }); }}
@@ -1113,6 +1139,7 @@ function SubitemsBlock({ task, allCols, subColumns, setSubColumns, apiUpdateSubC
               onToggleDeadline={() => { const nv = !col.isDeadline; setColumns(p => p.map(c => c.id === col.id ? { ...c, isDeadline: nv } : c)); if (apiUpdateColumn) apiUpdateColumn(col.id, { isDeadline: nv }); }}
               onChangeType={(newType) => { setColumns(p => p.map(c => c.id === col.id ? { ...c, type: newType, isDeadline: newType === "date" ? c.isDeadline : false } : c)); if (apiUpdateColumn) apiUpdateColumn(col.id, { type: newType }); }}
               onDuplicate={() => { const newId = "col_" + Date.now(); const dup = { ...col, id: newId, field: newId, name: col.name + " (cópia)", builtIn: false, scope: 'subitem', taskId: task.id, parentColumnId: col.id }; setSubColumns(p => [...p, dup]); apiCall("/columns", { method: "POST", body: JSON.stringify(dup) }); }}
+              onHide={HIDEABLE_NATIVE.includes(col.id) && perms.addColumns ? () => hideInTask(col.id) : null}
               canDelete={col.builtIn ? true : perms.deleteColumns}
             />
             <ResizeHandle onResize={(w) => resizeC(col.id, w, setColumns)} />
@@ -1156,7 +1183,7 @@ function SubitemsBlock({ task, allCols, subColumns, setSubColumns, apiUpdateSubC
             <span style={{ color: "#444", fontSize: 8 }}>●</span>
             <EditText value={sub.name} onChange={v => upSub(task.id, sub.id, { ...sub, name: v })} style={{ color: "#b8bcc4", fontSize: 12.5 }} />
           </div>
-          {allCols.map(col => <div key={col.id} style={cellStyle()}><CellRenderer col={col} item={sub} onChange={ns => upSub(task.id, sub.id, ns)} allPeople={allPeople} small /></div>)}
+          {visibleAllCols.map(col => <div key={col.id} style={cellStyle()}><CellRenderer col={col} item={sub} onChange={ns => upSub(task.id, sub.id, ns)} allPeople={allPeople} small /></div>)}
           {taskSubColumns.map(sc => <div key={sc.id} style={cellStyle()}><CellRenderer col={sc} item={sub} onChange={ns => upSub(task.id, sub.id, ns)} allPeople={allPeople} small /></div>)}
           {perms.addColumns ? (
             <div onClick={() => { if (setActiveSubColTaskId) setActiveSubColTaskId(task.id); setShowAddSubCol(true); }} style={{ ...cellStyle({ borderRight: "none", cursor: "pointer", color: "#579bfc", fontSize: 13, fontWeight: 700, opacity: 0.4 }) }}
