@@ -713,7 +713,7 @@ function ColHeader({ col, onRename, onDelete, onToggleDeadline, onChangeType, on
   return (
     <div ref={ref} style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 3, position: "relative", userSelect: "none", width: "100%", height: "100%" }}>
       <EditText value={col.name} onChange={v => onRename(v)} style={{ fontSize: 11, fontWeight: 600, color: "#9ca6b5", textAlign: "center" }} />
-      <span onClick={(e) => { e.stopPropagation(); setMenu(!menu); setShowTypeMenu(false); }} style={{ cursor: "pointer", fontSize: 12, color: "#556", padding: "0 1px", lineHeight: 1 }}>⋮</span>
+      <span onClick={(e) => { e.stopPropagation(); setMenu(!menu); setShowTypeMenu(false); }} style={{ cursor: "pointer", fontSize: 14, color: "#778ca3", padding: "0 2px", lineHeight: 1, fontWeight: 700 }}>⋮</span>
       {menu && (
         <div style={{ position: "absolute", top: "100%", right: -10, marginTop: 4, background: "#2a2d35", borderRadius: 10, padding: 6, minWidth: 200, zIndex: 50, boxShadow: "0 8px 24px rgba(0,0,0,.6)", border: "1px solid #3a3d45" }}>
           {/* Current type indicator */}
@@ -1071,7 +1071,7 @@ function BoardView({ tasks, setTasks, apiUpdateTask, apiUpdateSub, apiAddTask, a
 
                 {/* ── SUBITEMS ── */}
                 {isOpen && (
-                  <SubitemsBlock task={task} allCols={allCols} subColumns={subColumns} setSubColumns={setSubColumns} apiUpdateSubColumn={apiUpdateSubColumn} apiDeleteSubColumn={apiDeleteSubColumn} setColumns={setColumns} subGridCols={subGridCols} cellBorder={cellBorder} hdrStyle={hdrStyle} cellStyle={cellStyle} upSub={upSub} onOpenUpdates={onOpenUpdates} allPeople={allPeople} perms={perms} setShowAddSubCol={setShowAddSubCol} subReorder={subReorder} apiAddSubitem={apiAddSubitem} />
+                  <SubitemsBlock task={task} allCols={allCols} subColumns={subColumns} setSubColumns={setSubColumns} apiUpdateSubColumn={apiUpdateSubColumn} apiDeleteSubColumn={apiDeleteSubColumn} setColumns={setColumns} apiUpdateColumn={apiUpdateColumn} apiDeleteColumn={apiDeleteColumn} subGridCols={subGridCols} cellBorder={cellBorder} hdrStyle={hdrStyle} cellStyle={cellStyle} upSub={upSub} onOpenUpdates={onOpenUpdates} allPeople={allPeople} perms={perms} setShowAddSubCol={setShowAddSubCol} subReorder={subReorder} apiAddSubitem={apiAddSubitem} />
                 )}
               </div>
             );
@@ -1090,7 +1090,7 @@ function BoardView({ tasks, setTasks, apiUpdateTask, apiUpdateSub, apiAddTask, a
 }
 
 // Extracted subitems block to use its own drag hook
-function SubitemsBlock({ task, allCols, subColumns, setSubColumns, apiUpdateSubColumn, apiDeleteSubColumn, setColumns, subGridCols, cellBorder, hdrStyle, cellStyle, upSub, onOpenUpdates, allPeople, perms, setShowAddSubCol, subReorder, apiAddSubitem }) {
+function SubitemsBlock({ task, allCols, subColumns, setSubColumns, apiUpdateSubColumn, apiDeleteSubColumn, setColumns, apiUpdateColumn, apiDeleteColumn, subGridCols, cellBorder, hdrStyle, cellStyle, upSub, onOpenUpdates, allPeople, perms, setShowAddSubCol, subReorder, apiAddSubitem }) {
   const subDrag = useDragReorder(task.subitems, subReorder);
   const resizeC = (colId, newW, setter) => setter(prev => prev.map(c => c.id === colId ? { ...c, width: newW + "px" } : c));
 
@@ -1098,17 +1098,24 @@ function SubitemsBlock({ task, allCols, subColumns, setSubColumns, apiUpdateSubC
     <div>
       {/* Subitem column headers — always visible */}
       <div style={{ display: "grid", gridTemplateColumns: subGridCols, gap: 0, background: "#191b20", borderBottom: cellBorder }}>
-        <div style={{ borderRight: cellBorder, height: 28 }} />
-        <div style={{ borderRight: cellBorder, height: 28 }} />
-        <div style={{ ...hdrStyle({ height: 28, fontSize: 10, justifyContent: "flex-start", paddingLeft: 16, background: "#191b20" }) }}>Subitem</div>
+        <div style={{ borderRight: cellBorder, height: 34 }} />
+        <div style={{ borderRight: cellBorder, height: 34 }} />
+        <div style={{ ...hdrStyle({ height: 34, fontSize: 10, justifyContent: "flex-start", paddingLeft: 16, background: "#191b20" }) }}>Subitem</div>
         {allCols.map(col => (
-          <div key={col.id} style={{ ...hdrStyle({ height: 28, fontSize: 10, background: "#191b20" }), position: "relative" }}>
-            <span style={{ fontSize: 10, fontWeight: 600, color: "#667" }}>{col.name}</span>
+          <div key={col.id} style={{ ...hdrStyle({ height: 34, fontSize: 10, background: "#191b20" }) }}>
+            <ColHeader col={col}
+              onRename={v => { setColumns(p => p.map(c => c.id === col.id ? { ...c, name: v } : c)); if (apiUpdateColumn) apiUpdateColumn(col.id, { name: v }); }}
+              onDelete={perms.deleteColumns && !col.builtIn ? () => { if (apiDeleteColumn) apiDeleteColumn(col.id); else setColumns(p => p.filter(c => c.id !== col.id)); } : null}
+              onToggleDeadline={() => { const nv = !col.isDeadline; setColumns(p => p.map(c => c.id === col.id ? { ...c, isDeadline: nv } : c)); if (apiUpdateColumn) apiUpdateColumn(col.id, { isDeadline: nv }); }}
+              onChangeType={(newType) => { setColumns(p => p.map(c => c.id === col.id ? { ...c, type: newType, isDeadline: newType === "date" ? c.isDeadline : false } : c)); if (apiUpdateColumn) apiUpdateColumn(col.id, { type: newType }); }}
+              onDuplicate={() => { const newId = "col_" + Date.now(); const dup = { ...col, id: newId, field: newId, name: col.name + " (cópia)", builtIn: false }; setColumns(p => [...p, dup]); apiCall("/columns", { method: "POST", body: JSON.stringify(dup) }); }}
+              canDelete={perms.deleteColumns && !col.builtIn}
+            />
             <ResizeHandle onResize={(w) => resizeC(col.id, w, setColumns)} />
           </div>
         ))}
         {subColumns.map(sc => (
-          <div key={sc.id} style={{ ...hdrStyle({ height: 28, fontSize: 10, background: "#191b20" }) }}>
+          <div key={sc.id} style={{ ...hdrStyle({ height: 34, fontSize: 10, background: "#191b20" }) }}>
             <ColHeader col={sc}
               onRename={v => apiUpdateSubColumn ? apiUpdateSubColumn(sc.id, { name: v }) : setSubColumns(p => p.map(c => c.id === sc.id ? { ...c, name: v } : c))}
               onDelete={perms.deleteColumns ? () => apiDeleteSubColumn ? apiDeleteSubColumn(sc.id) : setSubColumns(p => p.filter(c => c.id !== sc.id)) : null}
@@ -1120,7 +1127,7 @@ function SubitemsBlock({ task, allCols, subColumns, setSubColumns, apiUpdateSubC
             <ResizeHandle onResize={(w) => resizeC(sc.id, w, setSubColumns)} />
           </div>
         ))}
-        <div style={{ height: 28 }} />
+        <div style={{ height: 34 }} />
       </div>
       {task.subitems.map((sub, si) => (
         <div key={sub.id}
