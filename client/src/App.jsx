@@ -924,7 +924,7 @@ function InlineAddRow({ placeholder, onAdd, gridCols, cellBorder, cellStyle, acc
 }
 
 // ─── BOARD VIEW (Monday.com style) ───────────────────────────────────────────
-function BoardView({ tasks, setTasks, apiUpdateTask, apiUpdateSub, apiAddTask, apiAddSubitem, search, allPeople, columns, setColumns, apiUpdateColumn, apiDeleteColumn, apiReorderColumns, apiReorderTasks, apiReorderSubitems, setShowAddCol, subColumns, setSubColumns, apiUpdateSubColumn, apiDeleteSubColumn, setShowAddSubCol, setActiveSubColTaskId, onOpenUpdates, perms = {} }) {
+function BoardView({ tasks, setTasks, apiUpdateTask, apiUpdateSub, apiAddTask, apiAddSubitem, search, allPeople, columns, setColumns, apiUpdateColumn, apiDeleteColumn, apiReorderColumns, apiReorderTasks, apiReorderSubitems, setShowAddCol, subColumns, setSubColumns, apiUpdateSubColumn, apiDeleteSubColumn, apiReorderSubColumns, setShowAddSubCol, setActiveSubColTaskId, onOpenUpdates, perms = {} }) {
   const [expanded, setExpanded] = useState({});
   const [selected, setSelected] = useState({});
   const [groupOpen, setGroupOpen] = useState(true);
@@ -1075,7 +1075,7 @@ function BoardView({ tasks, setTasks, apiUpdateTask, apiUpdateSub, apiAddTask, a
 
                 {/* ── SUBITEMS ── */}
                 {isOpen && (
-                  <SubitemsBlock task={task} allCols={allCols} subColumns={subColumns} setSubColumns={setSubColumns} apiUpdateSubColumn={apiUpdateSubColumn} apiDeleteSubColumn={apiDeleteSubColumn} setColumns={setColumns} apiUpdateColumn={apiUpdateColumn} apiDeleteColumn={apiDeleteColumn} taskColWidth={taskColWidth} cellBorder={cellBorder} hdrStyle={hdrStyle} cellStyle={cellStyle} upTask={upTask} upSub={upSub} onOpenUpdates={onOpenUpdates} allPeople={allPeople} perms={perms} setShowAddSubCol={setShowAddSubCol} setActiveSubColTaskId={setActiveSubColTaskId} subReorder={subReorder} apiAddSubitem={apiAddSubitem} />
+                  <SubitemsBlock task={task} allCols={allCols} subColumns={subColumns} setSubColumns={setSubColumns} apiUpdateSubColumn={apiUpdateSubColumn} apiDeleteSubColumn={apiDeleteSubColumn} apiReorderSubColumns={apiReorderSubColumns} setColumns={setColumns} apiUpdateColumn={apiUpdateColumn} apiDeleteColumn={apiDeleteColumn} taskColWidth={taskColWidth} cellBorder={cellBorder} hdrStyle={hdrStyle} cellStyle={cellStyle} upTask={upTask} upSub={upSub} onOpenUpdates={onOpenUpdates} allPeople={allPeople} perms={perms} setShowAddSubCol={setShowAddSubCol} setActiveSubColTaskId={setActiveSubColTaskId} subReorder={subReorder} apiAddSubitem={apiAddSubitem} />
                 )}
               </div>
             );
@@ -1094,10 +1094,14 @@ function BoardView({ tasks, setTasks, apiUpdateTask, apiUpdateSub, apiAddTask, a
 }
 
 // Extracted subitems block to use its own drag hook
-function SubitemsBlock({ task, allCols, subColumns, setSubColumns, apiUpdateSubColumn, apiDeleteSubColumn, setColumns, apiUpdateColumn, apiDeleteColumn, taskColWidth, cellBorder, hdrStyle, cellStyle, upTask, upSub, onOpenUpdates, allPeople, perms, setShowAddSubCol, setActiveSubColTaskId, subReorder, apiAddSubitem }) {
+function SubitemsBlock({ task, allCols, subColumns, setSubColumns, apiUpdateSubColumn, apiDeleteSubColumn, apiReorderSubColumns, setColumns, apiUpdateColumn, apiDeleteColumn, taskColWidth, cellBorder, hdrStyle, cellStyle, upTask, upSub, onOpenUpdates, allPeople, perms, setShowAddSubCol, setActiveSubColTaskId, subReorder, apiAddSubitem }) {
   const subDrag = useDragReorder(task.subitems, subReorder);
   const resizeC = (colId, newW, setter) => setter(prev => prev.map(c => c.id === colId ? { ...c, width: newW + "px" } : c));
   const taskSubColumns = subColumns.filter(sc => sc.taskId === task.id);
+  const subColDrag = useDragReorder(taskSubColumns, (newTaskSubCols) => {
+    if (apiReorderSubColumns) apiReorderSubColumns(task.id, newTaskSubCols.map(c => c.id));
+    else setSubColumns(prev => [...prev.filter(sc => sc.taskId !== task.id), ...newTaskSubCols]);
+  });
   const hiddenCols = (task.custom && task.custom.hiddenSubCols) || [];
   const visibleAllCols = allCols.filter(c => !hiddenCols.includes(c.id));
   const HIDEABLE_NATIVE = ["col_orders", "col_cancel"];
@@ -1145,8 +1149,14 @@ function SubitemsBlock({ task, allCols, subColumns, setSubColumns, apiUpdateSubC
             <ResizeHandle onResize={(w) => resizeC(col.id, w, setColumns)} />
           </div>
         ))}
-        {taskSubColumns.map(sc => (
-          <div key={sc.id} style={{ ...hdrStyle({ height: 34, fontSize: 10, background: "#191b20" }) }}>
+        {taskSubColumns.map((sc, sci) => (
+          <div key={sc.id}
+            draggable
+            onDragStart={() => subColDrag.onDragStart(sci)}
+            onDragEnter={() => subColDrag.onDragEnter(sci)}
+            onDragEnd={subColDrag.onDragEnd}
+            onDragOver={e => e.preventDefault()}
+            style={{ ...hdrStyle({ height: 34, fontSize: 10, background: "#191b20" }), opacity: subColDrag.dragging === sci ? 0.4 : 1, cursor: "grab" }}>
             <ColHeader col={sc}
               onRename={v => apiUpdateSubColumn ? apiUpdateSubColumn(sc.id, { name: v }) : setSubColumns(p => p.map(c => c.id === sc.id ? { ...c, name: v } : c))}
               onDelete={perms.deleteColumns ? () => apiDeleteSubColumn ? apiDeleteSubColumn(sc.id) : setSubColumns(p => p.filter(c => c.id !== sc.id)) : null}
@@ -2620,6 +2630,17 @@ function Dashboard({ currentUser, onLogout }) {
     apiCall("/subitems/reorder", { method: "PUT", body: JSON.stringify({ taskId, order: orderedIds }) });
   };
 
+  const apiReorderSubColumns = (taskId, orderedSubColIds) => {
+    setSubColumns(prev => {
+      const byId = new Map(prev.map(sc => [sc.id, sc]));
+      const others = prev.filter(sc => sc.taskId !== taskId);
+      const reorderedTask = orderedSubColIds.map(id => byId.get(id)).filter(Boolean);
+      const next = [...others, ...reorderedTask];
+      apiCall("/columns/reorder", { method: "PUT", body: JSON.stringify({ order: [...columns.map(c => c.id), ...next.map(c => c.id)] }) });
+      return next;
+    });
+  };
+
   const apiAddSubColumn = (col) => {
     const withScope = { ...col, scope: "subitem", taskId: col.taskId || activeSubColTaskId || null };
     setSubColumns(prev => [...prev, withScope]);
@@ -2839,7 +2860,7 @@ function Dashboard({ currentUser, onLogout }) {
       {/* CONTENT */}
       <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
         <div style={{ flex: 1, overflow: "auto", padding: 14 }}>
-          {view === "board" && <BoardView tasks={tasks} setTasks={setTasks} apiUpdateTask={apiUpdateTask} apiUpdateSub={apiUpdateSub} apiAddTask={apiAddTask} apiAddSubitem={apiAddSubitem} search={search} allPeople={allPeople} columns={columns} setColumns={setColumns} apiUpdateColumn={apiUpdateColumn} apiDeleteColumn={apiDeleteColumn} apiReorderColumns={apiReorderColumns} apiReorderTasks={apiReorderTasks} apiReorderSubitems={apiReorderSubitems} setShowAddCol={setShowAddCol} subColumns={subColumns} setSubColumns={setSubColumns} apiUpdateSubColumn={apiUpdateSubColumn} apiDeleteSubColumn={apiDeleteSubColumn} setShowAddSubCol={setShowAddSubCol} setActiveSubColTaskId={setActiveSubColTaskId} onOpenUpdates={openUpdates} perms={perms} />}
+          {view === "board" && <BoardView tasks={tasks} setTasks={setTasks} apiUpdateTask={apiUpdateTask} apiUpdateSub={apiUpdateSub} apiAddTask={apiAddTask} apiAddSubitem={apiAddSubitem} search={search} allPeople={allPeople} columns={columns} setColumns={setColumns} apiUpdateColumn={apiUpdateColumn} apiDeleteColumn={apiDeleteColumn} apiReorderColumns={apiReorderColumns} apiReorderTasks={apiReorderTasks} apiReorderSubitems={apiReorderSubitems} setShowAddCol={setShowAddCol} subColumns={subColumns} setSubColumns={setSubColumns} apiUpdateSubColumn={apiUpdateSubColumn} apiDeleteSubColumn={apiDeleteSubColumn} apiReorderSubColumns={apiReorderSubColumns} setShowAddSubCol={setShowAddSubCol} setActiveSubColTaskId={setActiveSubColTaskId} onOpenUpdates={openUpdates} perms={perms} />}
           {view === "kanban" && <KanbanView tasks={tasks} setTasks={setTasks} apiUpdateTask={apiUpdateTask} search={search} allPeople={allPeople} onOpenUpdates={openUpdates} />}
           {view === "timeline" && <TimelineView tasks={tasks} search={search} />}
         </div>
