@@ -63,6 +63,7 @@ db.exec(`
   if (!cols.includes('scope')) db.exec("ALTER TABLE columns_config ADD COLUMN scope TEXT DEFAULT 'task'");
   if (!cols.includes('parent_column_id')) db.exec("ALTER TABLE columns_config ADD COLUMN parent_column_id TEXT");
   if (!cols.includes('task_id')) db.exec("ALTER TABLE columns_config ADD COLUMN task_id TEXT");
+  if (!cols.includes('computed')) db.exec("ALTER TABLE columns_config ADD COLUMN computed TEXT");
   // Clean up orphan subColumns without task_id (created before per-task scoping)
   db.prepare("DELETE FROM columns_config WHERE scope='subitem' AND task_id IS NULL").run();
 })();
@@ -80,42 +81,26 @@ db.exec(`
   }
 })();
 
-(function ensureNativeT2SumAutomation() {
+(function ensureNativeT2ComputedColumn() {
   const TARGET_COL_ID = 'col_total_canal_t2';
   const TARGET_TASK_ID = 't2';
-  const AUTO_ID = 'ai_sum_t2_channels';
+  const COMPUTED_MARKER = 'row_sum_numeric_siblings';
 
   const taskExists = db.prepare("SELECT id FROM tasks WHERE id=?").get(TARGET_TASK_ID);
   if (!taskExists) return;
 
-  const existingCol = db.prepare("SELECT id FROM columns_config WHERE id=?").get(TARGET_COL_ID);
+  const existingCol = db.prepare("SELECT id, computed FROM columns_config WHERE id=?").get(TARGET_COL_ID);
   if (!existingCol) {
     const m = db.prepare("SELECT MAX(sort_order) as m FROM columns_config").get().m || 0;
     db.prepare(`INSERT INTO columns_config
-      (id, name, type, field, built_in, is_deadline, width, sort_order, scope, parent_column_id, task_id)
-      VALUES (?, ?, 'number', ?, 0, 0, '140px', ?, 'subitem', NULL, ?)`)
-      .run(TARGET_COL_ID, 'TOTAL DE PEDIDOS POR CANAL DE VENDA', TARGET_COL_ID, m + 1, TARGET_TASK_ID);
+      (id, name, type, field, built_in, is_deadline, width, sort_order, scope, parent_column_id, task_id, computed)
+      VALUES (?, ?, 'number', ?, 0, 0, '140px', ?, 'subitem', NULL, ?, ?)`)
+      .run(TARGET_COL_ID, 'TOTAL DE PEDIDOS POR CANAL DE VENDA', TARGET_COL_ID, m + 1, TARGET_TASK_ID, COMPUTED_MARKER);
+  } else if (!existingCol.computed) {
+    db.prepare("UPDATE columns_config SET computed=? WHERE id=?").run(COMPUTED_MARKER, TARGET_COL_ID);
   }
 
-  const existingAuto = db.prepare("SELECT id FROM automations WHERE id=?").get(AUTO_ID);
-  if (!existingAuto) {
-    const rule = {
-      type: 'aggregate',
-      operation: 'sum',
-      direction: 'row',
-      scope: 'subitem',
-      autoDiscoverSource: true,
-      taskId: TARGET_TASK_ID,
-      targetColumn: TARGET_COL_ID,
-    };
-    db.prepare(`INSERT INTO automations
-      (id, name, description, icon, active, rule_config, natural_prompt, created_by, built_in)
-      VALUES (?, ?, ?, ?, 1, ?, ?, 'sistema', 1)`)
-      .run(AUTO_ID, 'Somar pedidos por canal (Impressão)',
-        'Soma por linha as subcolunas numéricas da tarefa Impressão Etiquetas Pedidos na coluna TOTAL DE PEDIDOS POR CANAL DE VENDA',
-        '🧮', JSON.stringify(rule),
-        'Somar todas as subcolunas numéricas da tarefa Impressão Etiquetas Pedidos em cada linha');
-  }
+  db.prepare("DELETE FROM automations WHERE id='ai_sum_t2_channels'").run();
 })();
 
 function seedDatabase() {
@@ -226,9 +211,9 @@ app.post('/api/subitems',auth,(req,res)=>{const{id,task_id,name,owner,status,res
 app.post('/api/updates',auth,(req,res)=>{const{id,targetType,targetId,text,mentions,files}=req.body;db.prepare('INSERT INTO updates (id,target_type,target_id,author,text,mentions,files) VALUES(?,?,?,?,?,?,?)').run(id,targetType,targetId,req.user.name,text||'',JSON.stringify(mentions||[]),JSON.stringify(files||[]));res.json({success:true});});
 app.delete('/api/updates/:id',auth,(req,res)=>{const u=db.prepare('SELECT author FROM updates WHERE id=?').get(req.params.id);if(!u)return res.status(404).json({error:'Relatório não encontrado'});if(u.author!==req.user.name&&req.user.role!=='admin')return res.status(403).json({error:'Apenas o autor pode excluir'});db.prepare('DELETE FROM updates WHERE id=?').run(req.params.id);res.json({success:true});});
 
-app.get('/api/columns',auth,(req,res)=>res.json(db.prepare('SELECT * FROM columns_config ORDER BY sort_order').all().map(c=>({id:c.id,name:c.name,type:c.type,field:c.field,builtIn:!!c.built_in,isDeadline:!!c.is_deadline,width:c.width,scope:c.scope||'task',parentColumnId:c.parent_column_id||null,taskId:c.task_id||null}))));
+app.get('/api/columns',auth,(req,res)=>res.json(db.prepare('SELECT * FROM columns_config ORDER BY sort_order').all().map(c=>({id:c.id,name:c.name,type:c.type,field:c.field,builtIn:!!c.built_in,isDeadline:!!c.is_deadline,width:c.width,scope:c.scope||'task',parentColumnId:c.parent_column_id||null,taskId:c.task_id||null,computed:c.computed||null}))));
 app.put('/api/columns/reorder',auth,(req,res)=>{const{order}=req.body;if(!Array.isArray(order))return res.status(400).json({error:'order deve ser array'});const upd=db.prepare('UPDATE columns_config SET sort_order=? WHERE id=?');const tx=db.transaction((ids)=>{ids.forEach((id,i)=>upd.run(i,id));});tx(order);res.json({success:true});});
-app.post('/api/columns',auth,(req,res)=>{const{id,name,type,field,isDeadline,width,scope,parentColumnId,taskId}=req.body;const m=db.prepare('SELECT MAX(sort_order) as m FROM columns_config').get().m||0;db.prepare('INSERT INTO columns_config (id,name,type,field,built_in,is_deadline,width,sort_order,scope,parent_column_id,task_id) VALUES(?,?,?,?,0,?,?,?,?,?,?)').run(id,name,type,field,isDeadline?1:0,width||'80px',m+1,scope||'task',parentColumnId||null,taskId||null);res.json({success:true});});
+app.post('/api/columns',auth,(req,res)=>{const{id,name,type,field,isDeadline,width,scope,parentColumnId,taskId,computed}=req.body;const m=db.prepare('SELECT MAX(sort_order) as m FROM columns_config').get().m||0;db.prepare('INSERT INTO columns_config (id,name,type,field,built_in,is_deadline,width,sort_order,scope,parent_column_id,task_id,computed) VALUES(?,?,?,?,0,?,?,?,?,?,?,?)').run(id,name,type,field,isDeadline?1:0,width||'80px',m+1,scope||'task',parentColumnId||null,taskId||null,computed||null);res.json({success:true});});
 app.put('/api/columns/:id',auth,(req,res)=>{const{name,isDeadline,width,type,parentColumnId}=req.body;if(name)db.prepare('UPDATE columns_config SET name=? WHERE id=?').run(name,req.params.id);if(isDeadline!==undefined)db.prepare('UPDATE columns_config SET is_deadline=? WHERE id=?').run(isDeadline?1:0,req.params.id);if(width)db.prepare('UPDATE columns_config SET width=? WHERE id=?').run(width,req.params.id);if(type)db.prepare('UPDATE columns_config SET type=? WHERE id=?').run(type,req.params.id);if(parentColumnId!==undefined)db.prepare('UPDATE columns_config SET parent_column_id=? WHERE id=?').run(parentColumnId||null,req.params.id);res.json({success:true});});
 app.delete('/api/columns/:id',auth,adminOnly,(req,res)=>{const c=db.prepare('SELECT built_in FROM columns_config WHERE id=?').get(req.params.id);if(c?.built_in)return res.status(400).json({error:'Não pode excluir nativa'});db.prepare('DELETE FROM columns_config WHERE id=?').run(req.params.id);res.json({success:true});});
 

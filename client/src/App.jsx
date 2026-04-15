@@ -256,9 +256,17 @@ function CellRenderer({ col, item, onChange, allPeople, small, subitems, subColu
   const val = getVal(item, col);
   const update = (v) => onChange(setVal(item, col, v));
 
-  // Auto-sum for task-level number columns that aggregate from subitems.
-  // Built-in: totalOrders ← sum(total), totalCancellations ← sum(cancellations).
-  // Custom:   any subColumn with parentColumnId === col.id, reading sub.custom[childField].
+  if (col.type === "number" && col.computed === "row_sum_numeric_siblings" && subColumns) {
+    const siblings = subColumns.filter(sc => sc.type === "number" && sc.id !== col.id && sc.computed !== "row_sum_numeric_siblings");
+    const rowSum = siblings.reduce((acc, sc) => acc + (Number((item.custom || {})[sc.field]) || 0), 0);
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+        <span style={{ fontSize: 13, fontWeight: 600, color: rowSum > 0 ? "#e8eaed" : "#555" }}>{rowSum || "—"}</span>
+        <span style={{ fontSize: 9, color: "#556" }} title="Soma das subcolunas numéricas desta linha">Σ</span>
+      </div>
+    );
+  }
+
   if (col.type === "number" && subitems && subitems.length > 0) {
     let sum = null;
     if (col.builtIn) {
@@ -1194,7 +1202,7 @@ function SubitemsBlock({ task, allCols, subColumns, setSubColumns, apiUpdateSubC
             <EditText value={sub.name} onChange={v => upSub(task.id, sub.id, { ...sub, name: v })} style={{ color: "#b8bcc4", fontSize: 12.5 }} />
           </div>
           {visibleAllCols.map(col => <div key={col.id} style={cellStyle()}><CellRenderer col={col} item={sub} onChange={ns => upSub(task.id, sub.id, ns)} allPeople={allPeople} small /></div>)}
-          {taskSubColumns.map(sc => <div key={sc.id} style={cellStyle()}><CellRenderer col={sc} item={sub} onChange={ns => upSub(task.id, sub.id, ns)} allPeople={allPeople} small /></div>)}
+          {taskSubColumns.map(sc => <div key={sc.id} style={cellStyle()}><CellRenderer col={sc} item={sub} onChange={ns => upSub(task.id, sub.id, ns)} allPeople={allPeople} small subColumns={taskSubColumns} /></div>)}
           {perms.addColumns ? (
             <div onClick={() => { if (setActiveSubColTaskId) setActiveSubColTaskId(task.id); setShowAddSubCol(true); }} style={{ ...cellStyle({ borderRight: "none", cursor: "pointer", color: "#579bfc", fontSize: 13, fontWeight: 700, opacity: 0.4 }) }}
               onMouseEnter={e => e.currentTarget.style.opacity = 1} onMouseLeave={e => e.currentTarget.style.opacity = 0.4}>+</div>
