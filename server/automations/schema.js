@@ -58,7 +58,7 @@ function ruleJsonSchema() {
       scope: { type: 'string', enum: SCOPES },
       sourceColumns: { type: 'array', items: { type: 'string' } },
       targetColumn: { type: 'string' },
-      taskId: { type: 'string', nullable: true },
+      taskId: { type: 'string' },
     },
     required: ['type', 'operation', 'direction', 'scope', 'sourceColumns', 'targetColumn'],
   };

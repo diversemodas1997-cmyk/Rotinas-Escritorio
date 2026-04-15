@@ -1271,24 +1271,53 @@ function AIPanel({ tasks, automations, setAutomations, canManageAutomations, col
   const [runningId, setRunningId] = useState(null);
   const [runToast, setRunToast] = useState(null);
 
+  const rawFetch = async (path, opts) => {
+    const token = localStorage.getItem("rotina_token");
+    const res = await fetch(`${API_URL}/api${path}`, { ...opts, headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}`, ...(opts?.headers || {}) } });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    return data;
+  };
+
   const createAutomation = async () => {
     if (!autoDesc.trim()) { setAutoError("Descreva a automação"); return; }
     setAutoParsing(true); setAutoError("");
-    const result = await apiCall("/automations", { method: "POST", body: JSON.stringify({ description: autoDesc.trim(), name: autoName.trim() || undefined }) });
-    setAutoParsing(false);
-    if (!result) { setAutoError("Falha ao criar automação. Verifique se GEMINI_API_KEY está configurada no servidor e se a descrição referencia colunas existentes."); return; }
-    setAutomations(prev => [...prev, result]);
-    setShowCreateAuto(false); setAutoDesc(""); setAutoName("");
+    try {
+      const result = await rawFetch("/automations", { method: "POST", body: JSON.stringify({ description: autoDesc.trim(), name: autoName.trim() || undefined }) });
+      setAutomations(prev => [...prev, result]);
+      setShowCreateAuto(false); setAutoDesc(""); setAutoName("");
+    } catch (e) {
+      setAutoError(e.message);
+    } finally {
+      setAutoParsing(false);
+    }
+  };
+
+  const testGemini = async () => {
+    setAutoError(""); setAutoParsing(true);
+    try {
+      const r = await rawFetch("/admin/gemini-health");
+      if (r.ok) setAutoError(`✅ Gemini OK (modelo: ${r.model}). Resposta teste: ${r.response}`);
+      else setAutoError(`❌ Gemini com problema: ${r.error}`);
+    } catch (e) {
+      setAutoError(`❌ Falha ao testar: ${e.message}`);
+    } finally {
+      setAutoParsing(false);
+    }
   };
 
   const runAutomation = async (id) => {
     setRunningId(id); setRunToast(null);
-    const result = await apiCall(`/automations/${id}/run`, { method: "POST" });
-    setRunningId(null);
-    if (!result) { setRunToast({ ok: false, msg: "Falha ao executar automação" }); return; }
-    setRunToast({ ok: true, msg: result.summary || `${result.applied} linhas atualizadas` });
-    if (onDataChanged) await onDataChanged();
-    setTimeout(() => setRunToast(null), 4000);
+    try {
+      const result = await rawFetch(`/automations/${id}/run`, { method: "POST" });
+      setRunToast({ ok: true, msg: result.summary || `${result.applied} linhas atualizadas` });
+      if (onDataChanged) await onDataChanged();
+    } catch (e) {
+      setRunToast({ ok: false, msg: e.message });
+    } finally {
+      setRunningId(null);
+      setTimeout(() => setRunToast(null), 6000);
+    }
   };
 
   const deleteAutomation = async (id) => {
@@ -1564,9 +1593,12 @@ function AIPanel({ tasks, automations, setAutomations, canManageAutomations, col
                 <input value={autoName} onChange={e => setAutoName(e.target.value)} placeholder="Nome (opcional)" style={{ width: "100%", padding: "8px 10px", borderRadius: 7, border: "1px solid #333", background: "#13151a", color: "#e8eaed", fontSize: 12, marginBottom: 8, boxSizing: "border-box" }} />
                 <textarea value={autoDesc} onChange={e => setAutoDesc(e.target.value)} placeholder={'Ex.: "Soma dos números das colunas de pedidos em cada linha dos subitem, mostrando o total na coluna TOTAL POR CANAL DE VENDA"'} rows={5} style={{ width: "100%", padding: "8px 10px", borderRadius: 7, border: "1px solid #333", background: "#13151a", color: "#e8eaed", fontSize: 12, resize: "vertical", boxSizing: "border-box", fontFamily: "inherit" }} />
                 {autoError && <div style={{ marginTop: 10, padding: 8, background: "#2a1a1a", border: "1px solid #4a2020", borderRadius: 6, color: "#e2445c", fontSize: 11 }}>❌ {autoError}</div>}
-                <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 14 }}>
-                  <button onClick={() => setShowCreateAuto(false)} disabled={autoParsing} style={{ background: "transparent", color: "#778ca3", border: "1px solid #333", borderRadius: 7, padding: "7px 14px", fontSize: 12, cursor: "pointer" }}>Cancelar</button>
-                  <button onClick={createAutomation} disabled={autoParsing} style={{ background: autoParsing ? "#444" : "linear-gradient(135deg, #6c5ce7, #a55eea)", color: "#fff", border: "none", borderRadius: 7, padding: "7px 14px", fontSize: 12, fontWeight: 700, cursor: autoParsing ? "wait" : "pointer" }}>{autoParsing ? "⏳ Interpretando..." : "Criar"}</button>
+                <div style={{ display: "flex", gap: 8, justifyContent: "space-between", alignItems: "center", marginTop: 14 }}>
+                  <button onClick={testGemini} disabled={autoParsing} title="Verifica se a API Gemini está configurada e respondendo" style={{ background: "transparent", color: "#579bfc", border: "1px solid #1a3a5e", borderRadius: 7, padding: "7px 10px", fontSize: 11, cursor: "pointer" }}>🔌 Testar Gemini</button>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button onClick={() => setShowCreateAuto(false)} disabled={autoParsing} style={{ background: "transparent", color: "#778ca3", border: "1px solid #333", borderRadius: 7, padding: "7px 14px", fontSize: 12, cursor: "pointer" }}>Cancelar</button>
+                    <button onClick={createAutomation} disabled={autoParsing} style={{ background: autoParsing ? "#444" : "linear-gradient(135deg, #6c5ce7, #a55eea)", color: "#fff", border: "none", borderRadius: 7, padding: "7px 14px", fontSize: 12, fontWeight: 700, cursor: autoParsing ? "wait" : "pointer" }}>{autoParsing ? "⏳ Interpretando..." : "Criar"}</button>
+                  </div>
                 </div>
               </div>
             </div>

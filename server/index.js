@@ -5,7 +5,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const Database = require('better-sqlite3');
 const path = require('path');
-const { parseAutomation } = require('./automations/parser');
+const { parseAutomation, healthCheck: geminiHealthCheck } = require('./automations/parser');
 const { execute: executeAutomation } = require('./automations/executor');
 const { validateRule } = require('./automations/schema');
 
@@ -283,6 +283,11 @@ app.delete('/api/automations/:id', auth, adminOnly, (req, res) => {
   if (row.built_in) return res.status(400).json({ error: 'Automações nativas não podem ser excluídas' });
   db.prepare('DELETE FROM automations WHERE id=?').run(req.params.id);
   res.json({ success: true });
+});
+
+app.get('/api/admin/gemini-health', auth, adminOnly, async (req, res) => {
+  const result = await geminiHealthCheck();
+  res.json(result);
 });
 
 app.get('/api/admin/backup', auth, adminOnly, (req, res) => {

@@ -67,22 +67,45 @@ async function parseAutomation({ description, columns }) {
   });
 
   const prompt = buildPrompt(description, columns);
-  const result = await model.generateContent(prompt);
-  const text = result.response.text();
+  let text;
+  try {
+    const result = await model.generateContent(prompt);
+    text = result.response.text();
+  } catch (e) {
+    console.error('[parser] Gemini API call failed:', e.stack || e.message);
+    throw new Error(`Falha na chamada Gemini: ${e.message}`);
+  }
 
   let rule;
   try {
     rule = JSON.parse(text);
   } catch (e) {
+    console.error('[parser] JSON parse failed. Raw response:', text);
     throw new Error(`Falha ao interpretar resposta da IA: ${e.message}`);
   }
 
+  if (rule.taskId === '' || rule.taskId === undefined) rule.taskId = null;
+
   const errors = validateRule(rule, columns);
   if (errors.length) {
+    console.error('[parser] Rule validation failed. Rule:', JSON.stringify(rule), 'errors:', errors);
     throw new Error(`Regra inválida: ${errors.join('; ')}`);
   }
 
   return rule;
 }
 
-module.exports = { parseAutomation };
+async function healthCheck() {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return { ok: false, error: 'GEMINI_API_KEY ausente no ambiente' };
+  try {
+    const genAI = new GoogleGenerativeAI(apiKey);
+    const model = genAI.getGenerativeModel({ model: MODEL });
+    const r = await model.generateContent('Responda apenas: OK');
+    return { ok: true, model: MODEL, response: r.response.text().slice(0, 80) };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
+module.exports = { parseAutomation, healthCheck };
