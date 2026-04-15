@@ -49,8 +49,21 @@ function execute({ db, rule }) {
   if (errors.length) return { applied: 0, summary: '', errors };
 
   const byId = new Map(columns.map(c => [c.id, c]));
-  const sourceCols = rule.sourceColumns.map(id => byId.get(id));
   const targetCol = byId.get(rule.targetColumn);
+  let sourceCols;
+  if (rule.autoDiscoverSource) {
+    sourceCols = columns.filter(c =>
+      c.scope === 'subitem' &&
+      c.taskId === rule.taskId &&
+      c.type === 'number' &&
+      c.id !== rule.targetColumn
+    );
+    if (sourceCols.length === 0) {
+      return { applied: 0, summary: '', errors: [`Nenhuma subcoluna numérica encontrada para a task ${rule.taskId}`] };
+    }
+  } else {
+    sourceCols = rule.sourceColumns.map(id => byId.get(id));
+  }
 
   let applied = 0;
   const updSub = db.prepare('UPDATE subitems SET custom=? WHERE id=?');

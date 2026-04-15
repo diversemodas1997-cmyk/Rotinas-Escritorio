@@ -80,6 +80,44 @@ db.exec(`
   }
 })();
 
+(function ensureNativeT2SumAutomation() {
+  const TARGET_COL_ID = 'col_total_canal_t2';
+  const TARGET_TASK_ID = 't2';
+  const AUTO_ID = 'ai_sum_t2_channels';
+
+  const taskExists = db.prepare("SELECT id FROM tasks WHERE id=?").get(TARGET_TASK_ID);
+  if (!taskExists) return;
+
+  const existingCol = db.prepare("SELECT id FROM columns_config WHERE id=?").get(TARGET_COL_ID);
+  if (!existingCol) {
+    const m = db.prepare("SELECT MAX(sort_order) as m FROM columns_config").get().m || 0;
+    db.prepare(`INSERT INTO columns_config
+      (id, name, type, field, built_in, is_deadline, width, sort_order, scope, parent_column_id, task_id)
+      VALUES (?, ?, 'number', ?, 0, 0, '140px', ?, 'subitem', NULL, ?)`)
+      .run(TARGET_COL_ID, 'TOTAL DE PEDIDOS POR CANAL DE VENDA', TARGET_COL_ID, m + 1, TARGET_TASK_ID);
+  }
+
+  const existingAuto = db.prepare("SELECT id FROM automations WHERE id=?").get(AUTO_ID);
+  if (!existingAuto) {
+    const rule = {
+      type: 'aggregate',
+      operation: 'sum',
+      direction: 'row',
+      scope: 'subitem',
+      autoDiscoverSource: true,
+      taskId: TARGET_TASK_ID,
+      targetColumn: TARGET_COL_ID,
+    };
+    db.prepare(`INSERT INTO automations
+      (id, name, description, icon, active, rule_config, natural_prompt, created_by, built_in)
+      VALUES (?, ?, ?, ?, 1, ?, ?, 'sistema', 1)`)
+      .run(AUTO_ID, 'Somar pedidos por canal (Impressão)',
+        'Soma por linha as subcolunas numéricas da tarefa Impressão Etiquetas Pedidos na coluna TOTAL DE PEDIDOS POR CANAL DE VENDA',
+        '🧮', JSON.stringify(rule),
+        'Somar todas as subcolunas numéricas da tarefa Impressão Etiquetas Pedidos em cada linha');
+  }
+})();
+
 function seedDatabase() {
   if (db.prepare('SELECT COUNT(*) as c FROM users').get().c > 0) return;
   const hash = bcrypt.hashSync('123456', 10);

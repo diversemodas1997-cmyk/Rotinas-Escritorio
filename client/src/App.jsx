@@ -1557,6 +1557,7 @@ function AIPanel({ tasks, automations, setAutomations, canManageAutomations, col
 
           {automations.map(a => {
             const isUser = !a.builtIn && a.ruleConfig;
+            const canRun = !!a.ruleConfig;
             return (
               <div key={a.id} style={{ background: "#23262e", borderRadius: 8, padding: 10, display: "flex", alignItems: "center", gap: 8, border: a.active ? "1px solid #6c5ce7" : "1px solid #333", marginBottom: 6 }}>
                 <span style={{ fontSize: 18 }}>{a.icon}</span>
@@ -1565,13 +1566,13 @@ function AIPanel({ tasks, automations, setAutomations, canManageAutomations, col
                   <div style={{ fontSize: 10, color: "#778ca3", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{isUser ? (a.naturalPrompt || a.desc) : a.desc}</div>
                   {isUser && a.lastRunAt && <div style={{ fontSize: 9, color: "#556", marginTop: 2 }}>Última execução: {a.lastRunStatus || "—"}</div>}
                 </div>
+                {canRun && canManageAutomations && (
+                  <button onClick={() => runAutomation(a.id)} disabled={runningId === a.id} title="Executar" style={{ background: runningId === a.id ? "#444" : "#00c875", color: "#fff", border: "none", borderRadius: 6, padding: "4px 8px", fontSize: 11, fontWeight: 700, cursor: runningId === a.id ? "wait" : "pointer" }}>
+                    {runningId === a.id ? "⏳" : "▶"}
+                  </button>
+                )}
                 {isUser && canManageAutomations && (
-                  <>
-                    <button onClick={() => runAutomation(a.id)} disabled={runningId === a.id} title="Executar" style={{ background: runningId === a.id ? "#444" : "#00c875", color: "#fff", border: "none", borderRadius: 6, padding: "4px 8px", fontSize: 11, fontWeight: 700, cursor: runningId === a.id ? "wait" : "pointer" }}>
-                      {runningId === a.id ? "⏳" : "▶"}
-                    </button>
-                    <button onClick={() => deleteAutomation(a.id)} title="Excluir" style={{ background: "transparent", color: "#e2445c", border: "1px solid #4a2020", borderRadius: 6, padding: "4px 6px", fontSize: 11, cursor: "pointer" }}>🗑</button>
-                  </>
+                  <button onClick={() => deleteAutomation(a.id)} title="Excluir" style={{ background: "transparent", color: "#e2445c", border: "1px solid #4a2020", borderRadius: 6, padding: "4px 6px", fontSize: 11, cursor: "pointer" }}>🗑</button>
                 )}
                 {canManageAutomations ? (
                   <div onClick={() => setAutomations(p => p.map(x => x.id === a.id ? { ...x, active: !x.active } : x))} style={{ width: 36, height: 20, borderRadius: 10, background: a.active ? "#6c5ce7" : "#444", cursor: "pointer", position: "relative" }}><div style={{ width: 16, height: 16, borderRadius: "50%", background: "#fff", position: "absolute", top: 2, left: a.active ? 18 : 2, transition: "left .2s" }} /></div>

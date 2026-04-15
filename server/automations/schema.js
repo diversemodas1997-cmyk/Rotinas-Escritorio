@@ -14,18 +14,20 @@ function validateRule(rule, columnsCatalog) {
   if (!OPERATIONS.includes(rule.operation)) errors.push(`operation deve ser um de: ${OPERATIONS.join(', ')}`);
   if (!DIRECTIONS.includes(rule.direction)) errors.push(`direction deve ser um de: ${DIRECTIONS.join(', ')}`);
   if (!SCOPES.includes(rule.scope)) errors.push(`scope deve ser um de: ${SCOPES.join(', ')}`);
-  if (!Array.isArray(rule.sourceColumns) || rule.sourceColumns.length === 0) errors.push('sourceColumns deve ser um array não-vazio');
+  const autoDiscover = rule.autoDiscoverSource === true;
+  if (!autoDiscover && (!Array.isArray(rule.sourceColumns) || rule.sourceColumns.length === 0)) errors.push('sourceColumns deve ser um array não-vazio');
   if (!rule.targetColumn || typeof rule.targetColumn !== 'string') errors.push('targetColumn obrigatório');
   if (rule.taskId !== null && rule.taskId !== undefined && typeof rule.taskId !== 'string') errors.push('taskId deve ser string ou null');
+  if (autoDiscover && !rule.taskId) errors.push('autoDiscoverSource requer taskId');
 
   if (errors.length) return errors;
 
   const byId = new Map(columnsCatalog.map(c => [c.id, c]));
-  const allIds = [...rule.sourceColumns, rule.targetColumn];
-  for (const id of allIds) {
+  const idsToCheck = autoDiscover ? [rule.targetColumn] : [...rule.sourceColumns, rule.targetColumn];
+  for (const id of idsToCheck) {
     if (!byId.has(id)) errors.push(`coluna "${id}" não existe no quadro`);
   }
-  if (rule.sourceColumns.includes(rule.targetColumn)) {
+  if (!autoDiscover && rule.sourceColumns.includes(rule.targetColumn)) {
     errors.push('targetColumn não pode estar em sourceColumns');
   }
 
@@ -35,8 +37,7 @@ function validateRule(rule, columnsCatalog) {
     errors.push('direction=column requer scope=subitem (agrega filhos subitem em uma task pai)');
   }
 
-  if (errors.length === 0) {
-    // warn (non-blocking) if source columns are not number type
+  if (errors.length === 0 && !autoDiscover) {
     for (const id of rule.sourceColumns) {
       const c = byId.get(id);
       if (c && c.type && c.type !== 'number') {
