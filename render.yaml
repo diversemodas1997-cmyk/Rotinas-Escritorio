@@ -17,3 +17,5 @@ services:
         sync: false
       - key: DB_PATH
         value: /data/database.sqlite
+      - key: GEMINI_API_KEY
+        sync: false

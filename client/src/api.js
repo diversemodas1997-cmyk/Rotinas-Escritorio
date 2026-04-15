@@ -44,4 +44,18 @@ export const api = {
 
   getAutomations: () => request('/automations'),
   updateAutomation: (id, active) => request(`/automations/${id}`, { method: 'PUT', body: JSON.stringify({ active }) }),
+  createAutomation: (description, name, icon) => request('/automations', { method: 'POST', body: JSON.stringify({ description, name, icon }) }),
+  runAutomation: (id) => request(`/automations/${id}/run`, { method: 'POST' }),
+  deleteAutomation: (id) => request(`/automations/${id}`, { method: 'DELETE' }),
+  downloadBackup: async () => {
+    const res = await fetch(`${API_URL}/api/admin/backup`, { headers: headers() });
+    if (!res.ok) throw new Error('Falha ao baixar backup');
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `database.backup-${new Date().toISOString().replace(/[:.]/g, '-')}.sqlite`;
+    a.click();
+    URL.revokeObjectURL(url);
+  },
 };

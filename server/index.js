@@ -1,9 +1,13 @@
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const Database = require('better-sqlite3');
 const path = require('path');
+const { parseAutomation } = require('./automations/parser');
+const { execute: executeAutomation } = require('./automations/executor');
+const { validateRule } = require('./automations/schema');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -61,6 +65,19 @@ db.exec(`
   if (!cols.includes('task_id')) db.exec("ALTER TABLE columns_config ADD COLUMN task_id TEXT");
   // Clean up orphan subColumns without task_id (created before per-task scoping)
   db.prepare("DELETE FROM columns_config WHERE scope='subitem' AND task_id IS NULL").run();
+})();
+
+(function migrateAutomations() {
+  const cols = db.prepare("PRAGMA table_info(automations)").all().map(c => c.name);
+  if (!cols.includes('rule_config')) db.exec("ALTER TABLE automations ADD COLUMN rule_config TEXT");
+  if (!cols.includes('natural_prompt')) db.exec("ALTER TABLE automations ADD COLUMN natural_prompt TEXT");
+  if (!cols.includes('created_by')) db.exec("ALTER TABLE automations ADD COLUMN created_by TEXT");
+  if (!cols.includes('last_run_at')) db.exec("ALTER TABLE automations ADD COLUMN last_run_at DATETIME");
+  if (!cols.includes('last_run_status')) db.exec("ALTER TABLE automations ADD COLUMN last_run_status TEXT");
+  if (!cols.includes('built_in')) {
+    db.exec("ALTER TABLE automations ADD COLUMN built_in INTEGER DEFAULT 0");
+    db.prepare("UPDATE automations SET built_in=1 WHERE built_in IS NULL OR built_in=0").run();
+  }
 })();
 
 function seedDatabase() {
@@ -177,8 +194,102 @@ app.post('/api/columns',auth,(req,res)=>{const{id,name,type,field,isDeadline,wid
 app.put('/api/columns/:id',auth,(req,res)=>{const{name,isDeadline,width,type,parentColumnId}=req.body;if(name)db.prepare('UPDATE columns_config SET name=? WHERE id=?').run(name,req.params.id);if(isDeadline!==undefined)db.prepare('UPDATE columns_config SET is_deadline=? WHERE id=?').run(isDeadline?1:0,req.params.id);if(width)db.prepare('UPDATE columns_config SET width=? WHERE id=?').run(width,req.params.id);if(type)db.prepare('UPDATE columns_config SET type=? WHERE id=?').run(type,req.params.id);if(parentColumnId!==undefined)db.prepare('UPDATE columns_config SET parent_column_id=? WHERE id=?').run(parentColumnId||null,req.params.id);res.json({success:true});});
 app.delete('/api/columns/:id',auth,adminOnly,(req,res)=>{const c=db.prepare('SELECT built_in FROM columns_config WHERE id=?').get(req.params.id);if(c?.built_in)return res.status(400).json({error:'Não pode excluir nativa'});db.prepare('DELETE FROM columns_config WHERE id=?').run(req.params.id);res.json({success:true});});
 
-app.get('/api/automations',auth,(req,res)=>res.json(db.prepare('SELECT * FROM automations').all().map(a=>({id:a.id,name:a.name,desc:a.description,icon:a.icon,active:!!a.active}))));
-app.put('/api/automations/:id',auth,adminOnly,(req,res)=>{const{active}=req.body;db.prepare('UPDATE automations SET active=? WHERE id=?').run(active?1:0,req.params.id);res.json({success:true});});
+app.get('/api/automations', auth, (req, res) => {
+  const rows = db.prepare('SELECT * FROM automations').all();
+  res.json(rows.map(a => ({
+    id: a.id,
+    name: a.name,
+    desc: a.description,
+    icon: a.icon,
+    active: !!a.active,
+    builtIn: !!a.built_in,
+    ruleConfig: a.rule_config ? JSON.parse(a.rule_config) : null,
+    naturalPrompt: a.natural_prompt || null,
+    createdBy: a.created_by || null,
+    lastRunAt: a.last_run_at || null,
+    lastRunStatus: a.last_run_status || null,
+  })));
+});
+
+app.put('/api/automations/:id', auth, adminOnly, (req, res) => {
+  const { active } = req.body;
+  db.prepare('UPDATE automations SET active=? WHERE id=?').run(active ? 1 : 0, req.params.id);
+  res.json({ success: true });
+});
+
+// Simple in-memory per-user rate limit for parser calls (protects Gemini free tier).
+const _parseRate = new Map();
+function checkParseRate(userId) {
+  const now = Date.now();
+  const LIMIT = 20;
+  const WINDOW = 24 * 60 * 60 * 1000;
+  const rec = _parseRate.get(userId);
+  if (!rec || now > rec.resetAt) {
+    _parseRate.set(userId, { count: 1, resetAt: now + WINDOW });
+    return true;
+  }
+  if (rec.count >= LIMIT) return false;
+  rec.count++;
+  return true;
+}
+
+app.post('/api/automations', auth, adminOnly, async (req, res) => {
+  const { description, name, icon } = req.body;
+  if (!description || typeof description !== 'string') return res.status(400).json({ error: 'description obrigatório' });
+  if (!checkParseRate(req.user.id)) return res.status(429).json({ error: 'Limite diário de criação atingido (20/dia)' });
+  try {
+    const columns = db.prepare('SELECT * FROM columns_config').all().map(c => ({
+      id: c.id, name: c.name, type: c.type, field: c.field,
+      scope: c.scope || 'task', parent_column_id: c.parent_column_id, task_id: c.task_id,
+    }));
+    const rule = await parseAutomation({ description, columns });
+    const id = 'auto_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+    const displayName = (name && name.trim()) || description.slice(0, 60);
+    const displayIcon = icon || '✨';
+    db.prepare(`INSERT INTO automations (id, name, description, icon, active, rule_config, natural_prompt, created_by, built_in)
+                VALUES (?, ?, ?, ?, 1, ?, ?, ?, 0)`)
+      .run(id, displayName, `Automação personalizada`, displayIcon, JSON.stringify(rule), description, req.user.name);
+    res.json({ id, name: displayName, icon: displayIcon, active: true, builtIn: false, ruleConfig: rule, naturalPrompt: description, createdBy: req.user.name });
+  } catch (e) {
+    console.error('Automation parse error:', e.message);
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post('/api/automations/:id/run', auth, adminOnly, (req, res) => {
+  const row = db.prepare('SELECT * FROM automations WHERE id=?').get(req.params.id);
+  if (!row) return res.status(404).json({ error: 'Automação não encontrada' });
+  if (!row.rule_config) return res.status(400).json({ error: 'Esta automação é apenas placeholder e não pode ser executada' });
+  let rule;
+  try { rule = JSON.parse(row.rule_config); } catch { return res.status(500).json({ error: 'rule_config corrompido' }); }
+
+  const columns = db.prepare('SELECT * FROM columns_config').all().map(c => ({
+    id: c.id, name: c.name, type: c.type, field: c.field,
+    scope: c.scope || 'task', parentColumnId: c.parent_column_id, taskId: c.task_id,
+  }));
+  const vErrors = validateRule(rule, columns);
+  if (vErrors.length) return res.status(400).json({ error: `Regra inválida: ${vErrors.join('; ')}` });
+
+  const result = executeAutomation({ db, rule });
+  const status = result.errors.length ? `erro: ${result.errors[0]}` : `ok (${result.applied})`;
+  db.prepare('UPDATE automations SET last_run_at=CURRENT_TIMESTAMP, last_run_status=? WHERE id=?').run(status, req.params.id);
+  if (result.errors.length) return res.status(400).json({ error: result.errors[0] });
+  res.json(result);
+});
+
+app.delete('/api/automations/:id', auth, adminOnly, (req, res) => {
+  const row = db.prepare('SELECT built_in FROM automations WHERE id=?').get(req.params.id);
+  if (!row) return res.status(404).json({ error: 'Não encontrada' });
+  if (row.built_in) return res.status(400).json({ error: 'Automações nativas não podem ser excluídas' });
+  db.prepare('DELETE FROM automations WHERE id=?').run(req.params.id);
+  res.json({ success: true });
+});
+
+app.get('/api/admin/backup', auth, adminOnly, (req, res) => {
+  const dbPath = process.env.DB_PATH || path.join(__dirname, 'database.sqlite');
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  res.download(dbPath, `database.backup-${stamp}.sqlite`);
+});
 
 if(process.env.NODE_ENV==='production'){app.use(express.static(path.join(__dirname,'../client/build')));app.get('*',(req,res)=>res.sendFile(path.join(__dirname,'../client/build/index.html')));}
 

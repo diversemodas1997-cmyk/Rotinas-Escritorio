@@ -1256,13 +1256,46 @@ function TimelineView({ tasks, search }) {
 }
 
 // ─── AI PANEL ────────────────────────────────────────────────────────────────
-function AIPanel({ tasks, automations, setAutomations, canManageAutomations, columns, users }) {
+function AIPanel({ tasks, automations, setAutomations, canManageAutomations, columns, users, onDataChanged }) {
   const [activeTab, setActiveTab] = useState("analysis");
   const [loading, setLoading] = useState(false);
   const [analysis, setAnalysis] = useState(null);
   const [aiChat, setAiChat] = useState([]);
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
+  const [showCreateAuto, setShowCreateAuto] = useState(false);
+  const [autoDesc, setAutoDesc] = useState("");
+  const [autoName, setAutoName] = useState("");
+  const [autoParsing, setAutoParsing] = useState(false);
+  const [autoError, setAutoError] = useState("");
+  const [runningId, setRunningId] = useState(null);
+  const [runToast, setRunToast] = useState(null);
+
+  const createAutomation = async () => {
+    if (!autoDesc.trim()) { setAutoError("Descreva a automação"); return; }
+    setAutoParsing(true); setAutoError("");
+    const result = await apiCall("/automations", { method: "POST", body: JSON.stringify({ description: autoDesc.trim(), name: autoName.trim() || undefined }) });
+    setAutoParsing(false);
+    if (!result) { setAutoError("Falha ao criar automação. Verifique se GEMINI_API_KEY está configurada no servidor e se a descrição referencia colunas existentes."); return; }
+    setAutomations(prev => [...prev, result]);
+    setShowCreateAuto(false); setAutoDesc(""); setAutoName("");
+  };
+
+  const runAutomation = async (id) => {
+    setRunningId(id); setRunToast(null);
+    const result = await apiCall(`/automations/${id}/run`, { method: "POST" });
+    setRunningId(null);
+    if (!result) { setRunToast({ ok: false, msg: "Falha ao executar automação" }); return; }
+    setRunToast({ ok: true, msg: result.summary || `${result.applied} linhas atualizadas` });
+    if (onDataChanged) await onDataChanged();
+    setTimeout(() => setRunToast(null), 4000);
+  };
+
+  const deleteAutomation = async (id) => {
+    if (!window.confirm("Excluir esta automação?")) return;
+    const result = await apiCall(`/automations/${id}`, { method: "DELETE" });
+    if (result) setAutomations(prev => prev.filter(a => a.id !== id));
+  };
 
   // ─── DEEP ANALYSIS ─────────────────────────────────────────────────────────
   const runAnalysis = () => {
@@ -1480,21 +1513,64 @@ function AIPanel({ tasks, automations, setAutomations, canManageAutomations, col
       {/* AUTOMATIONS TAB */}
       {activeTab === "auto" && (
         <div>
-          <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 10 }}>⚡ Automações IA</div>
-          {automations.map(a => (
-            <div key={a.id} style={{ background: "#23262e", borderRadius: 8, padding: 10, display: "flex", alignItems: "center", gap: 8, border: a.active ? "1px solid #6c5ce7" : "1px solid #333", marginBottom: 6 }}>
-              <span style={{ fontSize: 18 }}>{a.icon}</span>
-              <div style={{ flex: 1 }}><div style={{ fontWeight: 600, fontSize: 11 }}>{a.name}</div><div style={{ fontSize: 10, color: "#778ca3" }}>{a.desc}</div></div>
-              {canManageAutomations ? (
-                <div onClick={() => setAutomations(p => p.map(x => x.id === a.id ? { ...x, active: !x.active } : x))} style={{ width: 36, height: 20, borderRadius: 10, background: a.active ? "#6c5ce7" : "#444", cursor: "pointer", position: "relative" }}><div style={{ width: 16, height: 16, borderRadius: "50%", background: "#fff", position: "absolute", top: 2, left: a.active ? 18 : 2, transition: "left .2s" }} /></div>
-              ) : (
-                <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                  <div style={{ width: 36, height: 20, borderRadius: 10, background: a.active ? "#6c5ce740" : "#33333380", position: "relative", opacity: 0.5 }}><div style={{ width: 16, height: 16, borderRadius: "50%", background: "#aaa", position: "absolute", top: 2, left: a.active ? 18 : 2 }} /></div>
-                  <LockedOverlay />
-                </div>
-              )}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+            <div style={{ fontWeight: 700, fontSize: 13 }}>⚡ Automações IA</div>
+            {canManageAutomations && (
+              <button onClick={() => { setShowCreateAuto(true); setAutoError(""); }} style={{ background: "linear-gradient(135deg, #6c5ce7, #a55eea)", color: "#fff", border: "none", borderRadius: 6, padding: "5px 10px", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>+ Nova</button>
+            )}
+          </div>
+
+          {runToast && (
+            <div style={{ background: runToast.ok ? "#102a1a" : "#2a1a1a", border: `1px solid ${runToast.ok ? "#204a30" : "#4a2020"}`, color: runToast.ok ? "#00c875" : "#e2445c", borderRadius: 8, padding: 8, fontSize: 11, marginBottom: 8 }}>
+              {runToast.ok ? "✅ " : "❌ "}{runToast.msg}
             </div>
-          ))}
+          )}
+
+          {automations.map(a => {
+            const isUser = !a.builtIn && a.ruleConfig;
+            return (
+              <div key={a.id} style={{ background: "#23262e", borderRadius: 8, padding: 10, display: "flex", alignItems: "center", gap: 8, border: a.active ? "1px solid #6c5ce7" : "1px solid #333", marginBottom: 6 }}>
+                <span style={{ fontSize: 18 }}>{a.icon}</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.name}</div>
+                  <div style={{ fontSize: 10, color: "#778ca3", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{isUser ? (a.naturalPrompt || a.desc) : a.desc}</div>
+                  {isUser && a.lastRunAt && <div style={{ fontSize: 9, color: "#556", marginTop: 2 }}>Última execução: {a.lastRunStatus || "—"}</div>}
+                </div>
+                {isUser && canManageAutomations && (
+                  <>
+                    <button onClick={() => runAutomation(a.id)} disabled={runningId === a.id} title="Executar" style={{ background: runningId === a.id ? "#444" : "#00c875", color: "#fff", border: "none", borderRadius: 6, padding: "4px 8px", fontSize: 11, fontWeight: 700, cursor: runningId === a.id ? "wait" : "pointer" }}>
+                      {runningId === a.id ? "⏳" : "▶"}
+                    </button>
+                    <button onClick={() => deleteAutomation(a.id)} title="Excluir" style={{ background: "transparent", color: "#e2445c", border: "1px solid #4a2020", borderRadius: 6, padding: "4px 6px", fontSize: 11, cursor: "pointer" }}>🗑</button>
+                  </>
+                )}
+                {canManageAutomations ? (
+                  <div onClick={() => setAutomations(p => p.map(x => x.id === a.id ? { ...x, active: !x.active } : x))} style={{ width: 36, height: 20, borderRadius: 10, background: a.active ? "#6c5ce7" : "#444", cursor: "pointer", position: "relative" }}><div style={{ width: 16, height: 16, borderRadius: "50%", background: "#fff", position: "absolute", top: 2, left: a.active ? 18 : 2, transition: "left .2s" }} /></div>
+                ) : (
+                  <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                    <div style={{ width: 36, height: 20, borderRadius: 10, background: a.active ? "#6c5ce740" : "#33333380", position: "relative", opacity: 0.5 }}><div style={{ width: 16, height: 16, borderRadius: "50%", background: "#aaa", position: "absolute", top: 2, left: a.active ? 18 : 2 }} /></div>
+                    <LockedOverlay />
+                  </div>
+                )}
+              </div>
+            );
+          })}
+
+          {showCreateAuto && (
+            <div onClick={() => !autoParsing && setShowCreateAuto(false)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}>
+              <div onClick={e => e.stopPropagation()} style={{ background: "#1a1d23", border: "1px solid #2a2d35", borderRadius: 12, padding: 20, width: 480, maxWidth: "90vw" }}>
+                <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4 }}>✨ Nova automação personalizada</div>
+                <div style={{ fontSize: 11, color: "#778ca3", marginBottom: 14 }}>Descreva em português o que a automação deve fazer. A IA vai interpretar e criar uma regra executável.</div>
+                <input value={autoName} onChange={e => setAutoName(e.target.value)} placeholder="Nome (opcional)" style={{ width: "100%", padding: "8px 10px", borderRadius: 7, border: "1px solid #333", background: "#13151a", color: "#e8eaed", fontSize: 12, marginBottom: 8, boxSizing: "border-box" }} />
+                <textarea value={autoDesc} onChange={e => setAutoDesc(e.target.value)} placeholder={'Ex.: "Soma dos números das colunas de pedidos em cada linha dos subitem, mostrando o total na coluna TOTAL POR CANAL DE VENDA"'} rows={5} style={{ width: "100%", padding: "8px 10px", borderRadius: 7, border: "1px solid #333", background: "#13151a", color: "#e8eaed", fontSize: 12, resize: "vertical", boxSizing: "border-box", fontFamily: "inherit" }} />
+                {autoError && <div style={{ marginTop: 10, padding: 8, background: "#2a1a1a", border: "1px solid #4a2020", borderRadius: 6, color: "#e2445c", fontSize: 11 }}>❌ {autoError}</div>}
+                <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 14 }}>
+                  <button onClick={() => setShowCreateAuto(false)} disabled={autoParsing} style={{ background: "transparent", color: "#778ca3", border: "1px solid #333", borderRadius: 7, padding: "7px 14px", fontSize: 12, cursor: "pointer" }}>Cancelar</button>
+                  <button onClick={createAutomation} disabled={autoParsing} style={{ background: autoParsing ? "#444" : "linear-gradient(135deg, #6c5ce7, #a55eea)", color: "#fff", border: "none", borderRadius: 7, padding: "7px 14px", fontSize: 12, fontWeight: 700, cursor: autoParsing ? "wait" : "pointer" }}>{autoParsing ? "⏳ Interpretando..." : "Criar"}</button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -2737,7 +2813,16 @@ function Dashboard({ currentUser, onLogout }) {
         {showAI && (
           <div style={{ width: 320, background: "#1a1d23", borderLeft: "1px solid #2a2d35", overflow: "auto", padding: 12, flexShrink: 0, animation: "slideIn .2s ease" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}><span style={{ fontWeight: 700, fontSize: 14 }}>🤖 Assistente IA</span><button onClick={() => setShowAI(false)} style={{ background: "none", border: "none", color: "#778ca3", fontSize: 18, cursor: "pointer" }}>×</button></div>
-            <AIPanel tasks={tasks} automations={automations} setAutomations={(fn) => { const next = fn(automations); setAutomations(next); const changed = next.find((a, i) => a.active !== automations[i]?.active); if (changed) apiUpdateAutomation(changed.id, changed.active); }} canManageAutomations={perms.manageAutomations} />
+            <AIPanel tasks={tasks} automations={automations} setAutomations={(arg) => {
+              const next = typeof arg === "function" ? arg(automations) : arg;
+              setAutomations(next);
+              const changed = next.find((a, i) => automations[i] && a.active !== automations[i].active && a.id === automations[i].id);
+              if (changed) apiUpdateAutomation(changed.id, changed.active);
+            }} canManageAutomations={perms.manageAutomations} onDataChanged={async () => {
+              const [tasksData, autoData] = await Promise.all([apiCall("/tasks"), apiCall("/automations")]);
+              if (tasksData) setTasks(tasksData.map(t => ({ ...t, custom: t.custom || {}, updates: t.updates || [], subitems: (t.subitems || []).map(s => ({ ...s, custom: s.custom || {}, updates: s.updates || [], cancellations: s.cancellations || 0 })) })));
+              if (autoData) setAutomations(autoData);
+            }} />
           </div>
         )}
       </div>
