@@ -240,8 +240,8 @@ function EditDate({ value, onChange, isDeadline }) {
 function EditText({ value, onChange, style: cs = {} }) {
   const [e, setE] = useState(false); const [v, setV] = useState(value || ""); const r = useRef();
   useEffect(() => { if (e && r.current) r.current.focus(); }, [e]);
-  const commit = () => { setE(false); onChange(v.trim() || value); };
-  if (!e) return <span onDoubleClick={() => { setV(value || ""); setE(true); }} style={{ cursor: "default", ...cs }} title="Duplo-clique para editar">{value || "—"}</span>;
+  const commit = () => { setE(false); if (onChange) onChange(v.trim() || value); };
+  if (!e) return <span onDoubleClick={onChange ? () => { setV(value || ""); setE(true); } : undefined} style={{ cursor: onChange ? "default" : "text", ...cs }} title={onChange ? "Duplo-clique para editar" : undefined}>{value || "—"}</span>;
   return <input ref={r} value={v} onChange={e => setV(e.target.value)} onBlur={commit} onKeyDown={e => e.key === "Enter" && commit()} style={{ background: "#1a1d23", color: "#e8eaed", border: "1px solid #6c5ce7", borderRadius: 4, padding: "2px 5px", fontSize: "inherit", fontWeight: "inherit", outline: "none", width: "100%", ...cs }} />;
 }
 function StatusBadge({ status, onClick, small }) {
@@ -252,13 +252,31 @@ function PriorityBadge({ priority, onClick }) {
   const p = PRIORITY_COLORS[priority] || PRIORITY_COLORS["Média"];
   return <div onClick={onClick} style={{ background: p.bg, color: p.text, padding: "6px 0", borderRadius: 0, fontSize: 12, fontWeight: 600, textAlign: "center", width: "100%", cursor: onClick ? "pointer" : "default", userSelect: "none" }}>{priority}</div>;
 }
-function CellRenderer({ col, item, onChange, allPeople, small, subitems, subColumns }) {
+function CellRenderer({ col, item, onChange, allPeople, small, subitems, subColumns, taskColumns }) {
   const val = getVal(item, col);
   const update = (v) => onChange(setVal(item, col, v));
 
   if (col.type === "number" && col.computed === "row_sum_numeric_siblings" && subColumns) {
-    const siblings = subColumns.filter(sc => sc.type === "number" && sc.id !== col.id && sc.computed !== "row_sum_numeric_siblings");
-    const rowSum = siblings.reduce((acc, sc) => acc + (Number((item.custom || {})[sc.field]) || 0), 0);
+    // 1) Sum the native "total" field (Pedidos) — always include unless cancellations
+    const nativeTotal = Number(item.total) || 0;
+
+    // 2) Sum custom numeric subcolumns (exclude self, cancel columns, and other computed)
+    const customSiblings = subColumns.filter(sc =>
+      sc.id !== col.id &&
+      sc.type === "number" &&
+      sc.computed !== "row_sum_numeric_siblings" &&
+      sc.parentColumnId !== "col_cancel" &&
+      sc.field !== "totalCancellations" &&
+      !/cancel/i.test(sc.field) &&
+      !/cancelamento/i.test(sc.name)
+    );
+    const customSum = customSiblings.reduce((acc, sc) => {
+      const raw = (item.custom || {})[sc.id] ?? (item.custom || {})[sc.field];
+      const n = Number(raw);
+      return acc + (Number.isFinite(n) ? n : 0);
+    }, 0);
+
+    const rowSum = nativeTotal + customSum;
     return (
       <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
         <span style={{ fontSize: 13, fontWeight: 600, color: rowSum > 0 ? "#e8eaed" : "#555" }}>{rowSum || "—"}</span>
@@ -269,8 +287,31 @@ function CellRenderer({ col, item, onChange, allPeople, small, subitems, subColu
 
   if (col.type === "number" && subitems && subitems.length > 0) {
     let sum = null;
-    if (col.builtIn) {
-      const sumField = col.field === "totalOrders" ? "total" : col.field === "totalCancellations" ? "cancellations" : null;
+    if (col.builtIn && col.field === "totalOrders" && subColumns && subColumns.length > 0) {
+      // Sum each subitem's native total + custom numeric subcolumns (excluding cancel)
+      const computedCol = subColumns.find(sc => sc.computed === "row_sum_numeric_siblings" && sc.type === "number");
+      const customSiblings = subColumns.filter(sc =>
+        sc.type === "number" &&
+        sc.computed !== "row_sum_numeric_siblings" &&
+        sc.parentColumnId !== "col_cancel" &&
+        !/cancel/i.test(sc.field) &&
+        !/cancelamento/i.test(sc.name)
+      );
+      if (computedCol || customSiblings.length > 0) {
+        sum = subitems.reduce((a, s) => {
+          const nativeTotal = Number(s.total) || 0;
+          const customTotal = customSiblings.reduce((acc, sc) => {
+            const raw = (s.custom || {})[sc.id] ?? (s.custom || {})[sc.field];
+            const n = Number(raw);
+            return acc + (Number.isFinite(n) ? n : 0);
+          }, 0);
+          return a + nativeTotal + customTotal;
+        }, 0);
+      } else {
+        sum = subitems.reduce((a, s) => a + (Number(s.total) || 0), 0);
+      }
+    } else if (col.builtIn) {
+      const sumField = col.field === "totalCancellations" ? "cancellations" : null;
       if (sumField) sum = subitems.reduce((a, s) => a + (Number(s[sumField]) || 0), 0);
     } else if (subColumns && subColumns.length > 0) {
       const children = subColumns.filter(sc => sc.parentColumnId === col.id && sc.type === "number");
@@ -720,7 +761,7 @@ function ColHeader({ col, onRename, onDelete, onToggleDeadline, onChangeType, on
 
   return (
     <div ref={ref} style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 3, position: "relative", userSelect: "none", width: "100%", height: "100%" }}>
-      <EditText value={col.name} onChange={v => onRename(v)} style={{ fontSize: 11, fontWeight: 600, color: "#9ca6b5", textAlign: "center" }} />
+      <EditText value={col.name} onChange={onRename ? v => onRename(v) : undefined} style={{ fontSize: 11, fontWeight: 600, color: "#9ca6b5", textAlign: "center" }} />
       <span onClick={(e) => { e.stopPropagation(); setMenu(!menu); setShowTypeMenu(false); }} style={{ cursor: "pointer", fontSize: 14, color: "#778ca3", padding: "0 2px", lineHeight: 1, fontWeight: 700 }}>⋮</span>
       {menu && (
         <div style={{ position: "absolute", top: "100%", right: -10, marginTop: 4, background: "#2a2d35", borderRadius: 10, padding: 6, minWidth: 200, zIndex: 50, boxShadow: "0 8px 24px rgba(0,0,0,.6)", border: "1px solid #3a3d45" }}>
@@ -1074,7 +1115,7 @@ function BoardView({ tasks, setTasks, apiUpdateTask, apiUpdateSub, apiAddTask, a
                   {/* Dynamic columns */}
                   {allCols.map(col => (
                     <div key={col.id} style={cellStyle()}>
-                      <CellRenderer col={col} item={task} onChange={ni => upTask(task.id, ni)} allPeople={allPeople} subitems={task.subitems} subColumns={subColumns.filter(sc => sc.taskId === task.id)} />
+                      <CellRenderer col={col} item={task} onChange={ni => upTask(task.id, ni)} allPeople={allPeople} subitems={task.subitems} subColumns={subColumns.filter(sc => sc.taskId === task.id)} taskColumns={allCols} />
                     </div>
                   ))}
 
@@ -1146,7 +1187,7 @@ function SubitemsBlock({ task, allCols, subColumns, setSubColumns, apiUpdateSubC
         {visibleAllCols.map(col => (
           <div key={col.id} style={{ ...hdrStyle({ height: 34, fontSize: 10, background: "#191b20" }) }}>
             <ColHeader col={col}
-              onRename={v => { setColumns(p => p.map(c => c.id === col.id ? { ...c, name: v } : c)); if (apiUpdateColumn) apiUpdateColumn(col.id, { name: v }); }}
+              onRename={null}
               onDelete={!col.builtIn && perms.deleteColumns ? () => { if (window.confirm(`Excluir a coluna "${col.name}" de TODAS as tarefas? Essa ação nao pode ser desfeita.`)) { if (apiDeleteColumn) apiDeleteColumn(col.id); else setColumns(p => p.filter(c => c.id !== col.id)); } } : null}
               onToggleDeadline={() => { const nv = !col.isDeadline; setColumns(p => p.map(c => c.id === col.id ? { ...c, isDeadline: nv } : c)); if (apiUpdateColumn) apiUpdateColumn(col.id, { isDeadline: nv }); }}
               onChangeType={(newType) => { setColumns(p => p.map(c => c.id === col.id ? { ...c, type: newType, isDeadline: newType === "date" ? c.isDeadline : false } : c)); if (apiUpdateColumn) apiUpdateColumn(col.id, { type: newType }); }}
@@ -1202,7 +1243,7 @@ function SubitemsBlock({ task, allCols, subColumns, setSubColumns, apiUpdateSubC
             <EditText value={sub.name} onChange={v => upSub(task.id, sub.id, { ...sub, name: v })} style={{ color: "#b8bcc4", fontSize: 12.5 }} />
           </div>
           {visibleAllCols.map(col => <div key={col.id} style={cellStyle()}><CellRenderer col={col} item={sub} onChange={ns => upSub(task.id, sub.id, ns)} allPeople={allPeople} small /></div>)}
-          {taskSubColumns.map(sc => <div key={sc.id} style={cellStyle()}><CellRenderer col={sc} item={sub} onChange={ns => upSub(task.id, sub.id, ns)} allPeople={allPeople} small subColumns={taskSubColumns} /></div>)}
+          {taskSubColumns.map(sc => <div key={sc.id} style={cellStyle()}><CellRenderer col={sc} item={sub} onChange={ns => upSub(task.id, sub.id, ns)} allPeople={allPeople} small subColumns={taskSubColumns} taskColumns={allCols} /></div>)}
           {perms.addColumns ? (
             <div onClick={() => { if (setActiveSubColTaskId) setActiveSubColTaskId(task.id); setShowAddSubCol(true); }} style={{ ...cellStyle({ borderRight: "none", cursor: "pointer", color: "#579bfc", fontSize: 13, fontWeight: 700, opacity: 0.4 }) }}
               onMouseEnter={e => e.currentTarget.style.opacity = 1} onMouseLeave={e => e.currentTarget.style.opacity = 0.4}>+</div>

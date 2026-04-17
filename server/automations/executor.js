@@ -6,6 +6,12 @@ const NATIVE_FIELD_MAP = {
   total: 'total',
 };
 
+function isCancelColumn(col) {
+  return col.parentColumnId === 'col_cancel' ||
+    /cancel/i.test(col.field) ||
+    /cancelamento/i.test(col.name);
+}
+
 function readNumericValue(row, column) {
   if (column.field && NATIVE_FIELD_MAP[column.field] && row[NATIVE_FIELD_MAP[column.field]] !== undefined) {
     const v = Number(row[NATIVE_FIELD_MAP[column.field]]);
@@ -56,7 +62,8 @@ function execute({ db, rule }) {
       c.scope === 'subitem' &&
       c.taskId === rule.taskId &&
       c.type === 'number' &&
-      c.id !== rule.targetColumn
+      c.id !== rule.targetColumn &&
+      !isCancelColumn(c)
     );
     if (sourceCols.length === 0) {
       return { applied: 0, summary: '', errors: [`Nenhuma subcoluna numérica encontrada para a task ${rule.taskId}`] };
