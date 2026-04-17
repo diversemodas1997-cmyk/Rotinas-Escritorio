@@ -103,6 +103,42 @@ db.exec(`
   db.prepare("DELETE FROM automations WHERE id='ai_sum_t2_channels'").run();
 })();
 
+(function cleanupOrphanCustomKeys() {
+  const validColIds = new Set(db.prepare('SELECT id FROM columns_config').all().map(r => r.id));
+  let removed = 0;
+  const updTask = db.prepare('UPDATE tasks SET custom=? WHERE id=?');
+  for (const t of db.prepare('SELECT id, custom FROM tasks').all()) {
+    try {
+      const cust = JSON.parse(t.custom || '{}');
+      let changed = false;
+      for (const k of Object.keys(cust)) {
+        if (k === 'hiddenSubCols') {
+          if (Array.isArray(cust[k])) {
+            const before = cust[k].length;
+            cust[k] = cust[k].filter(id => validColIds.has(id));
+            if (cust[k].length !== before) { changed = true; removed += before - cust[k].length; }
+          }
+          continue;
+        }
+        if (!validColIds.has(k)) { delete cust[k]; changed = true; removed++; }
+      }
+      if (changed) updTask.run(JSON.stringify(cust), t.id);
+    } catch {}
+  }
+  const updSub = db.prepare('UPDATE subitems SET custom=? WHERE id=?');
+  for (const s of db.prepare('SELECT id, custom FROM subitems').all()) {
+    try {
+      const cust = JSON.parse(s.custom || '{}');
+      let changed = false;
+      for (const k of Object.keys(cust)) {
+        if (!validColIds.has(k)) { delete cust[k]; changed = true; removed++; }
+      }
+      if (changed) updSub.run(JSON.stringify(cust), s.id);
+    } catch {}
+  }
+  if (removed > 0) console.log(`🧹 Cleaned ${removed} orphan custom keys`);
+})();
+
 function seedDatabase() {
   if (db.prepare('SELECT COUNT(*) as c FROM users').get().c > 0) return;
   const hash = bcrypt.hashSync('123456', 10);
@@ -215,7 +251,36 @@ app.get('/api/columns',auth,(req,res)=>res.json(db.prepare('SELECT * FROM column
 app.put('/api/columns/reorder',auth,(req,res)=>{const{order}=req.body;if(!Array.isArray(order))return res.status(400).json({error:'order deve ser array'});const upd=db.prepare('UPDATE columns_config SET sort_order=? WHERE id=?');const tx=db.transaction((ids)=>{ids.forEach((id,i)=>upd.run(i,id));});tx(order);res.json({success:true});});
 app.post('/api/columns',auth,(req,res)=>{const{id,name,type,field,isDeadline,width,scope,parentColumnId,taskId,computed}=req.body;const m=db.prepare('SELECT MAX(sort_order) as m FROM columns_config').get().m||0;db.prepare('INSERT INTO columns_config (id,name,type,field,built_in,is_deadline,width,sort_order,scope,parent_column_id,task_id,computed) VALUES(?,?,?,?,0,?,?,?,?,?,?,?)').run(id,name,type,field,isDeadline?1:0,width||'80px',m+1,scope||'task',parentColumnId||null,taskId||null,computed||null);res.json({success:true});});
 app.put('/api/columns/:id',auth,(req,res)=>{const{name,isDeadline,width,type,parentColumnId}=req.body;if(name)db.prepare('UPDATE columns_config SET name=? WHERE id=?').run(name,req.params.id);if(isDeadline!==undefined)db.prepare('UPDATE columns_config SET is_deadline=? WHERE id=?').run(isDeadline?1:0,req.params.id);if(width)db.prepare('UPDATE columns_config SET width=? WHERE id=?').run(width,req.params.id);if(type)db.prepare('UPDATE columns_config SET type=? WHERE id=?').run(type,req.params.id);if(parentColumnId!==undefined)db.prepare('UPDATE columns_config SET parent_column_id=? WHERE id=?').run(parentColumnId||null,req.params.id);res.json({success:true});});
-app.delete('/api/columns/:id',auth,adminOnly,(req,res)=>{const c=db.prepare('SELECT built_in FROM columns_config WHERE id=?').get(req.params.id);if(c?.built_in)return res.status(400).json({error:'Não pode excluir nativa'});db.prepare('DELETE FROM columns_config WHERE id=?').run(req.params.id);res.json({success:true});});
+app.delete('/api/columns/:id',auth,adminOnly,(req,res)=>{
+  const colId=req.params.id;
+  const c=db.prepare('SELECT built_in FROM columns_config WHERE id=?').get(colId);
+  if(c?.built_in)return res.status(400).json({error:'Não pode excluir nativa'});
+  const tx=db.transaction(()=>{
+    db.prepare('DELETE FROM columns_config WHERE id=?').run(colId);
+    const updTask=db.prepare('UPDATE tasks SET custom=? WHERE id=?');
+    for(const t of db.prepare('SELECT id, custom FROM tasks').all()){
+      try{
+        const cust=JSON.parse(t.custom||'{}');
+        let changed=false;
+        if(colId in cust){delete cust[colId];changed=true;}
+        if(Array.isArray(cust.hiddenSubCols)&&cust.hiddenSubCols.includes(colId)){
+          cust.hiddenSubCols=cust.hiddenSubCols.filter(x=>x!==colId);
+          changed=true;
+        }
+        if(changed)updTask.run(JSON.stringify(cust),t.id);
+      }catch{}
+    }
+    const updSub=db.prepare('UPDATE subitems SET custom=? WHERE id=?');
+    for(const s of db.prepare('SELECT id, custom FROM subitems').all()){
+      try{
+        const cust=JSON.parse(s.custom||'{}');
+        if(colId in cust){delete cust[colId];updSub.run(JSON.stringify(cust),s.id);}
+      }catch{}
+    }
+  });
+  tx();
+  res.json({success:true});
+});
 
 app.get('/api/automations', auth, (req, res) => {
   const rows = db.prepare('SELECT * FROM automations').all();
