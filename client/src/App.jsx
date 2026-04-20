@@ -2173,8 +2173,30 @@ function ReportsPanel({ onClose, fullscreen, onToggleFullscreen }) {
   );
 }
 
-function AdminPanel({ users, onUpdateRole, onClose, currentUser }) {
+function AdminPanel({ users, onUpdateRole, onCreateUser, onDeleteUser, onClose, currentUser, currentUserId }) {
   const [confirmAction, setConfirmAction] = useState(null);
+  const [showCreate, setShowCreate] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newEmail, setNewEmail] = useState("");
+  const [newPass, setNewPass] = useState("");
+  const [newRole, setNewRole] = useState("collaborator");
+  const [createErr, setCreateErr] = useState("");
+  const [creating, setCreating] = useState(false);
+
+  const submitCreate = async () => {
+    setCreateErr("");
+    if (!newName.trim() || !newEmail.trim() || !newPass) { setCreateErr("Preencha nome, email e senha"); return; }
+    if (newPass.length < 4) { setCreateErr("Senha deve ter pelo menos 4 caracteres"); return; }
+    setCreating(true);
+    const r = await onCreateUser({ name: newName.trim(), email: newEmail.trim(), password: newPass, role: newRole });
+    setCreating(false);
+    if (r?.error) { setCreateErr(r.error); return; }
+    setNewName(""); setNewEmail(""); setNewPass(""); setNewRole("collaborator"); setShowCreate(false);
+  };
+
+  const handleDelete = (user) => {
+    setConfirmAction({ kind: "delete", user: user.name, userId: user.id, message: `Excluir o usuário "${user.name}"? Esta ação não pode ser desfeita.` });
+  };
 
   const handleRoleChange = (userName, newRole) => {
     if (userName === currentUser && newRole !== "admin") {
@@ -2184,8 +2206,14 @@ function AdminPanel({ users, onUpdateRole, onClose, currentUser }) {
     onUpdateRole(userName, newRole);
   };
 
-  const confirmRoleChange = () => {
-    if (confirmAction) { onUpdateRole(confirmAction.user, confirmAction.role); setConfirmAction(null); }
+  const confirmRoleChange = async () => {
+    if (!confirmAction) return;
+    if (confirmAction.kind === "delete") {
+      await onDeleteUser(confirmAction.userId);
+    } else {
+      onUpdateRole(confirmAction.user, confirmAction.role);
+    }
+    setConfirmAction(null);
   };
 
   const adminCount = users.filter(u => u.role === "admin").length;
@@ -2243,7 +2271,32 @@ function AdminPanel({ users, onUpdateRole, onClose, currentUser }) {
 
         {/* Users list */}
         <div style={{ flex: 1, overflow: "auto", padding: "12px 24px" }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: "#778ca3", textTransform: "uppercase", letterSpacing: ".5px", marginBottom: 10 }}>Usuários ({users.length})</div>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "#778ca3", textTransform: "uppercase", letterSpacing: ".5px" }}>Usuários ({users.length})</div>
+            <button onClick={() => setShowCreate(s => !s)} style={{ padding: "6px 12px", borderRadius: 6, border: "none", background: showCreate ? "#333" : "#00c875", color: "#fff", fontSize: 11, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}>
+              {showCreate ? "Cancelar" : "+ Novo usuário"}
+            </button>
+          </div>
+          {showCreate && (
+            <div style={{ background: "#23262e", border: "1px solid #00c87530", borderRadius: 10, padding: 14, marginBottom: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+              <input value={newName} onChange={e => { setNewName(e.target.value); setCreateErr(""); }} placeholder="Nome completo"
+                style={{ padding: "8px 10px", borderRadius: 6, border: "1px solid #444", background: "#13151a", color: "#e8eaed", fontSize: 12, outline: "none" }} />
+              <input value={newEmail} onChange={e => { setNewEmail(e.target.value); setCreateErr(""); }} placeholder="email@exemplo.com" type="email"
+                style={{ padding: "8px 10px", borderRadius: 6, border: "1px solid #444", background: "#13151a", color: "#e8eaed", fontSize: 12, outline: "none" }} />
+              <input value={newPass} onChange={e => { setNewPass(e.target.value); setCreateErr(""); }} placeholder="Senha temporária (mín. 4)" type="password"
+                style={{ padding: "8px 10px", borderRadius: 6, border: "1px solid #444", background: "#13151a", color: "#e8eaed", fontSize: 12, outline: "none" }} />
+              <select value={newRole} onChange={e => setNewRole(e.target.value)}
+                style={{ padding: "8px 10px", borderRadius: 6, border: "1px solid #444", background: "#13151a", color: "#e8eaed", fontSize: 12, cursor: "pointer" }}>
+                <option value="collaborator">👤 Colaborador</option>
+                <option value="admin">👑 Administrador</option>
+              </select>
+              {createErr && <div style={{ fontSize: 11, color: "#e2445c" }}>{createErr}</div>}
+              <button onClick={submitCreate} disabled={creating} style={{ padding: "8px", borderRadius: 6, border: "none", background: creating ? "#555" : "#00c875", color: "#fff", fontSize: 12, fontWeight: 700, cursor: creating ? "wait" : "pointer" }}>
+                {creating ? "Criando..." : "Criar usuário"}
+              </button>
+              <div style={{ fontSize: 10, color: "#556" }}>O usuário poderá trocar a senha depois no próprio perfil.</div>
+            </div>
+          )}
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             {users.map(u => {
               const rc = ROLE_CONFIG[u.role] || ROLE_CONFIG.collaborator;
@@ -2270,6 +2323,13 @@ function AdminPanel({ users, onUpdateRole, onClose, currentUser }) {
                       <option value="admin">👑 Administrador</option>
                       <option value="collaborator">👤 Colaborador</option>
                     </select>
+                    {u.id !== currentUserId && !(isLastAdmin && u.role === "admin") && (
+                      <button onClick={() => handleDelete(u)} title="Excluir usuário"
+                        style={{ background: "transparent", border: "1px solid #e2445c40", color: "#e2445c", padding: "4px 8px", borderRadius: 6, cursor: "pointer", fontSize: 11 }}
+                        onMouseEnter={e => e.currentTarget.style.background = "rgba(226,68,92,.1)"} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                        🗑
+                      </button>
+                    )}
                   </div>
                 </div>
               );
@@ -2892,6 +2952,21 @@ function Dashboard({ currentUser, onLogout }) {
     if (u) { setUsers(prev => prev.map(x => x.name === userName ? { ...x, role: newRole } : x)); apiCall(`/users/${u.id}/role`, { method: "PUT", body: JSON.stringify({ role: newRole }) }); }
   };
 
+  const apiCreateUser = async ({ name, email, password, role }) => {
+    const res = await apiCall('/users', { method: 'POST', body: JSON.stringify({ name, email, password, role }) });
+    if (res?.error) return { error: res.error };
+    setUsers(prev => [...prev, res].sort((a, b) => a.name.localeCompare(b.name)));
+    if (res.avatar_color) PEOPLE_COLORS[res.name] = res.avatar_color;
+    return { user: res };
+  };
+
+  const apiDeleteUser = async (userId) => {
+    const res = await apiCall(`/users/${userId}`, { method: 'DELETE' });
+    if (res?.error) return { error: res.error };
+    setUsers(prev => prev.filter(u => u.id !== userId));
+    return { success: true };
+  };
+
   const apiUpdateUserProfile = (profileData) => {
     setUsers(prev => prev.map(u => u.name === currentUser.name ? { ...u, ...profileData } : u));
     if (profileData.avatarColor) PEOPLE_COLORS[profileData.name] = profileData.avatarColor;
@@ -3141,7 +3216,7 @@ function Dashboard({ currentUser, onLogout }) {
         }));
       }} onClose={() => setUpdatesTarget(null)} allPeople={allPeople} />}
       {showDrive && <GoogleDrivePanel onClose={() => setShowDrive(false)} />}
-      {showAdminPanel && isAdmin && <AdminPanel users={users} onUpdateRole={apiUpdateUserRole} onClose={() => setShowAdminPanel(false)} currentUser={currentUser.name} />}
+      {showAdminPanel && isAdmin && <AdminPanel users={users} onUpdateRole={apiUpdateUserRole} onCreateUser={apiCreateUser} onDeleteUser={apiDeleteUser} onClose={() => setShowAdminPanel(false)} currentUser={currentUser.name} currentUserId={currentUser.id} />}
       {showReports && isAdmin && <ReportsPanel fullscreen={reportsFullscreen} onToggleFullscreen={() => setReportsFullscreen(f => !f)} onClose={() => { setShowReports(false); setReportsFullscreen(false); }} />}
       {showProfile && <ProfileEditor userData={currentUserData} onSave={apiUpdateUserProfile} onClose={() => setShowProfile(false)} allUsers={users} />}
 

@@ -322,6 +322,31 @@ app.get('/api/config', (req, res) => {
 });
 
 app.get('/api/users',auth,(req,res)=>res.json(db.prepare('SELECT id,name,email,role,phone,department,bio,avatar_color FROM users ORDER BY name').all()));
+app.post('/api/users',auth,adminOnly,(req,res)=>{
+  const { name, email, password, role } = req.body || {};
+  if (!name || !email || !password) return res.status(400).json({ error: 'Nome, email e senha são obrigatórios' });
+  if (password.length < 4) return res.status(400).json({ error: 'Senha deve ter pelo menos 4 caracteres' });
+  const em = email.toLowerCase().trim();
+  if (db.prepare('SELECT id FROM users WHERE email=?').get(em)) return res.status(409).json({ error: 'Email já cadastrado' });
+  const r = role === 'admin' ? 'admin' : 'collaborator';
+  const colors = ['#ff642e','#fdab3d','#a25ddc','#00c875','#579bfc','#e2445c','#6c5ce7','#00ced1'];
+  const color = colors[Math.floor(Math.random() * colors.length)];
+  const hash = bcrypt.hashSync(password, 10);
+  const info = db.prepare('INSERT INTO users (name,email,password,role,avatar_color) VALUES (?,?,?,?,?)').run(name.trim(), em, hash, r, color);
+  res.json(db.prepare('SELECT id,name,email,role,phone,department,bio,avatar_color FROM users WHERE id=?').get(info.lastInsertRowid));
+});
+app.delete('/api/users/:id',auth,adminOnly,(req,res)=>{
+  const id = parseInt(req.params.id);
+  if (id === req.user.id) return res.status(400).json({ error: 'Não pode excluir a si mesmo' });
+  const target = db.prepare('SELECT role FROM users WHERE id=?').get(id);
+  if (!target) return res.status(404).json({ error: 'Usuário não encontrado' });
+  if (target.role === 'admin') {
+    const ac = db.prepare("SELECT COUNT(*) as c FROM users WHERE role='admin'").get().c;
+    if (ac <= 1) return res.status(400).json({ error: 'Precisa de pelo menos 1 administrador' });
+  }
+  db.prepare('DELETE FROM users WHERE id=?').run(id);
+  res.json({ success: true });
+});
 app.put('/api/users/:id',auth,(req,res)=>{const{id}=req.params;if(req.user.id!==parseInt(id)&&req.user.role!=='admin')return res.status(403).json({error:'Sem permissão'});const{name,email,phone,department,bio,avatar_color,password}=req.body;const u=[];const p=[];if(name){u.push('name=?');p.push(name);}if(email){u.push('email=?');p.push(email.toLowerCase());}if(phone!==undefined){u.push('phone=?');p.push(phone);}if(department!==undefined){u.push('department=?');p.push(department);}if(bio!==undefined){u.push('bio=?');p.push(bio);}if(avatar_color){u.push('avatar_color=?');p.push(avatar_color);}if(password){u.push('password=?');p.push(bcrypt.hashSync(password,10));}if(!u.length)return res.status(400).json({error:'Nada para atualizar'});p.push(id);db.prepare(`UPDATE users SET ${u.join(',')} WHERE id=?`).run(...p);res.json(db.prepare('SELECT id,name,email,role,phone,department,bio,avatar_color FROM users WHERE id=?').get(id));});
 app.put('/api/users/:id/role',auth,adminOnly,(req,res)=>{const{role}=req.body;if(!['admin','collaborator'].includes(role))return res.status(400).json({error:'Cargo inválido'});const ac=db.prepare("SELECT COUNT(*) as c FROM users WHERE role='admin'").get().c;const t=db.prepare('SELECT role FROM users WHERE id=?').get(req.params.id);if(t?.role==='admin'&&role!=='admin'&&ac<=1)return res.status(400).json({error:'Precisa de 1 admin'});db.prepare('UPDATE users SET role=? WHERE id=?').run(role,req.params.id);res.json({success:true});});
 
