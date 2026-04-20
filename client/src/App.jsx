@@ -1214,7 +1214,7 @@ function SubitemsBlock({ task, allCols, subColumns, setSubColumns, apiUpdateSubC
               onDuplicate={() => { const newId = "col_" + Date.now(); const dup = { ...sc, id: newId, field: newId, name: sc.name + " (cópia)", builtIn: false, taskId: task.id }; setSubColumns(p => [...p, dup]); apiCall("/columns", { method: "POST", body: JSON.stringify(dup) }); }}
               canDelete={perms.deleteColumns}
             />
-            <ResizeHandle onResize={(w) => resizeC(sc.id, w, setSubColumns)} />
+            <ResizeHandle onResize={(w) => { resizeC(sc.id, w, setSubColumns); if (apiUpdateSubColumn) apiUpdateSubColumn(sc.id, { width: w + "px" }); }} />
           </div>
         ))}
         <div style={{ height: 34 }} />
