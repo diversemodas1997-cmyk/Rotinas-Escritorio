@@ -55,6 +55,15 @@ db.exec(`
     id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT DEFAULT '',
     icon TEXT DEFAULT '🤖', active INTEGER DEFAULT 0
   );
+  CREATE TABLE IF NOT EXISTS daily_snapshots (
+    date TEXT NOT NULL, task_id TEXT NOT NULL, subitem_id TEXT,
+    column_id TEXT NOT NULL, value REAL DEFAULT 0, responsible TEXT DEFAULT '[]',
+    task_name TEXT DEFAULT '', subitem_name TEXT DEFAULT '', column_name TEXT DEFAULT '',
+    PRIMARY KEY (date, task_id, subitem_id, column_id)
+  );
+  CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY, value TEXT
+  );
 `);
 
 // Non-destructive migration: add scope/parent_column_id to existing databases
@@ -186,6 +195,88 @@ function seedDatabase() {
   console.log('✅ Database seeded');
 }
 seedDatabase();
+
+// ===== Daily rollover (00:00 America/Sao_Paulo) =====
+// BRT = UTC-3 year-round (Brazil abolished DST in 2019).
+function brtDateString(d = new Date()) {
+  const utcMs = d.getTime() + d.getTimezoneOffset() * 60000;
+  const brt = new Date(utcMs - 3 * 3600000);
+  return brt.toISOString().slice(0, 10);
+}
+
+function runDailyRollover() {
+  const today = brtDateString();
+  const row = db.prepare("SELECT value FROM settings WHERE key='last_rollover_date'").get();
+  const last = row?.value;
+  if (last === today) return;
+  // First run ever: just record today, nothing to snapshot.
+  if (!last) {
+    db.prepare("INSERT OR REPLACE INTO settings (key,value) VALUES ('last_rollover_date',?)").run(today);
+    return;
+  }
+  const numericSubCols = db.prepare(
+    "SELECT id, name, task_id FROM columns_config WHERE scope='subitem' AND type='number' AND (computed IS NULL OR computed='')"
+  ).all();
+  const tasks = db.prepare('SELECT id, name, total_orders, total_cancellations, responsible FROM tasks').all();
+  const taskById = new Map(tasks.map(t => [t.id, t]));
+  const subitems = db.prepare('SELECT id, task_id, name, total, custom, responsible FROM subitems').all();
+
+  const insSnap = db.prepare(
+    `INSERT OR REPLACE INTO daily_snapshots
+     (date, task_id, subitem_id, column_id, value, responsible, task_name, subitem_name, column_name)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  );
+  const updSub = db.prepare('UPDATE subitems SET total=0, custom=? WHERE id=?');
+  const updTask = db.prepare('UPDATE tasks SET total_orders=0, total_cancellations=0 WHERE id=?');
+
+  const tx = db.transaction(() => {
+    // Snapshot + zero subitem numeric columns
+    for (const s of subitems) {
+      const t = taskById.get(s.task_id);
+      const taskName = t?.name || '';
+      const resp = s.responsible || '[]';
+      let custom = {};
+      try { custom = JSON.parse(s.custom || '{}'); } catch {}
+      // Built-in `total` field
+      if (s.total && Number(s.total) !== 0) {
+        insSnap.run(last, s.task_id, s.id, '__total__', Number(s.total), resp, taskName, s.name, 'TOTAL');
+      }
+      let customChanged = false;
+      for (const col of numericSubCols) {
+        // Per-task scoped columns only snapshot for their own task
+        if (col.task_id && col.task_id !== s.task_id) continue;
+        const v = custom[col.id];
+        const num = typeof v === 'number' ? v : (v != null && v !== '' ? Number(v) : 0);
+        if (num && !Number.isNaN(num)) {
+          insSnap.run(last, s.task_id, s.id, col.id, num, resp, taskName, s.name, col.name);
+        }
+        if (col.id in custom) { delete custom[col.id]; customChanged = true; }
+      }
+      if ((s.total && Number(s.total) !== 0) || customChanged) {
+        updSub.run(JSON.stringify(custom), s.id);
+      }
+    }
+    // Snapshot + zero task totals
+    for (const t of tasks) {
+      if (t.total_orders && Number(t.total_orders) !== 0) {
+        insSnap.run(last, t.id, '', 'totalOrders', Number(t.total_orders), t.responsible || '[]', t.name, '', 'Pedidos');
+      }
+      if (t.total_cancellations && Number(t.total_cancellations) !== 0) {
+        insSnap.run(last, t.id, '', 'totalCancellations', Number(t.total_cancellations), t.responsible || '[]', t.name, '', 'Canc.');
+      }
+      if ((t.total_orders && Number(t.total_orders) !== 0) || (t.total_cancellations && Number(t.total_cancellations) !== 0)) {
+        updTask.run(t.id);
+      }
+    }
+    db.prepare("INSERT OR REPLACE INTO settings (key,value) VALUES ('last_rollover_date',?)").run(today);
+  });
+  tx();
+  console.log(`🗓️  Rollover: snapshot de ${last} gravado, valores zerados para ${today}`);
+}
+
+// Run once on boot and before each authenticated request.
+runDailyRollover();
+setInterval(() => { try { runDailyRollover(); } catch (e) { console.error('Rollover err:', e); } }, 5 * 60 * 1000);
 
 function auth(req,res,next){const t=req.headers.authorization?.split(' ')[1];if(!t)return res.status(401).json({error:'Token necessário'});try{req.user=jwt.verify(t,JWT_SECRET);next();}catch{return res.status(401).json({error:'Token inválido'});}}
 function adminOnly(req,res,next){if(req.user.role!=='admin')return res.status(403).json({error:'Acesso restrito'});next();}
@@ -376,6 +467,66 @@ app.delete('/api/automations/:id', auth, adminOnly, (req, res) => {
 app.get('/api/admin/gemini-health', auth, adminOnly, async (req, res) => {
   const result = await geminiHealthCheck();
   res.json(result);
+});
+
+// ===== Daily snapshots report (admin only) =====
+// Returns snapshots for the given period, aggregated totals, and per-user performance.
+// Query params: period=day|week|month|year (default day), date=YYYY-MM-DD (default today BRT).
+app.get('/api/reports', auth, adminOnly, (req, res) => {
+  try { runDailyRollover(); } catch {}
+  const period = ['day','week','month','year'].includes(req.query.period) ? req.query.period : 'day';
+  const ref = /^\d{4}-\d{2}-\d{2}$/.test(req.query.date || '') ? req.query.date : brtDateString();
+  const [y,m,d] = ref.split('-').map(Number);
+  const refDate = new Date(Date.UTC(y, m-1, d));
+  let start, end;
+  if (period === 'day') { start = end = ref; }
+  else if (period === 'week') {
+    const dow = refDate.getUTCDay(); // 0=Sun
+    const mondayOffset = dow === 0 ? -6 : 1 - dow;
+    const s = new Date(refDate); s.setUTCDate(s.getUTCDate() + mondayOffset);
+    const e = new Date(s); e.setUTCDate(e.getUTCDate() + 6);
+    start = s.toISOString().slice(0,10); end = e.toISOString().slice(0,10);
+  } else if (period === 'month') {
+    start = `${ref.slice(0,7)}-01`;
+    const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
+    end = `${ref.slice(0,7)}-${String(lastDay).padStart(2,'0')}`;
+  } else {
+    start = `${ref.slice(0,4)}-01-01`; end = `${ref.slice(0,4)}-12-31`;
+  }
+  const rows = db.prepare(
+    'SELECT * FROM daily_snapshots WHERE date >= ? AND date <= ? ORDER BY date, task_id, subitem_id, column_id'
+  ).all(start, end);
+
+  const byDay = {};
+  const perUser = {};
+  const perTask = {};
+  let total = 0;
+  for (const r of rows) {
+    const v = Number(r.value) || 0;
+    total += v;
+    if (!byDay[r.date]) byDay[r.date] = 0;
+    byDay[r.date] += v;
+    const key = r.task_id + '|' + r.subitem_id + '|' + r.column_id;
+    if (!perTask[key]) perTask[key] = { task_id: r.task_id, subitem_id: r.subitem_id, column_id: r.column_id, task_name: r.task_name, subitem_name: r.subitem_name, column_name: r.column_name, value: 0 };
+    perTask[key].value += v;
+    let resp = [];
+    try { resp = JSON.parse(r.responsible || '[]'); } catch {}
+    if (!resp.length) {
+      perUser['— Sem responsável'] = (perUser['— Sem responsável'] || 0) + v;
+    } else {
+      // Divide equally among co-responsibles so totals don't double-count.
+      const share = v / resp.length;
+      for (const name of resp) perUser[name] = (perUser[name] || 0) + share;
+    }
+  }
+  res.json({
+    period, date: ref, start, end,
+    total,
+    byDay: Object.entries(byDay).map(([date,value]) => ({ date, value })).sort((a,b) => a.date.localeCompare(b.date)),
+    perUser: Object.entries(perUser).map(([name,value]) => ({ name, value: Math.round(value*100)/100 })).sort((a,b) => b.value - a.value),
+    perTask: Object.values(perTask).sort((a,b) => b.value - a.value),
+    lastRolloverDate: db.prepare("SELECT value FROM settings WHERE key='last_rollover_date'").get()?.value || null
+  });
 });
 
 app.get('/api/admin/backup', auth, adminOnly, (req, res) => {

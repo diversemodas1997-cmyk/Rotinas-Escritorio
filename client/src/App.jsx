@@ -1997,6 +1997,182 @@ function LockedOverlay({ message = "Recurso restrito a administradores" }) {
 }
 
 // ─── ADMIN PANEL ─────────────────────────────────────────────────────────────
+function ReportsPanel({ onClose, fullscreen, onToggleFullscreen }) {
+  const [period, setPeriod] = useState("day");
+  const [date, setDate] = useState(() => {
+    const n = new Date();
+    const brt = new Date(n.getTime() + n.getTimezoneOffset() * 60000 - 3 * 3600000);
+    return brt.toISOString().slice(0, 10);
+  });
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    fetch(`${API_URL}/api/reports?period=${period}&date=${date}`, { headers: { Authorization: `Bearer ${getToken()}` } })
+      .then(r => r.json())
+      .then(d => { if (alive) { setData(d); setLoading(false); } })
+      .catch(() => { if (alive) { setData({ error: true }); setLoading(false); } });
+    return () => { alive = false; };
+  }, [period, date]);
+
+  const periods = [
+    { key: "day", label: "Dia" }, { key: "week", label: "Semana" },
+    { key: "month", label: "Mês" }, { key: "year", label: "Ano" }
+  ];
+  const fmtBR = s => { if (!s) return ""; const [y,m,d] = s.split("-"); return `${d}/${m}/${y}`; };
+
+  const container = fullscreen
+    ? { position: "fixed", inset: 0, background: "#13151a", zIndex: 120, display: "flex", flexDirection: "column" }
+    : { position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", display: "flex", justifyContent: "flex-end", zIndex: 120, backdropFilter: "blur(3px)" };
+
+  const inner = fullscreen
+    ? { flex: 1, display: "flex", flexDirection: "column", background: "#13151a", color: "#e8eaed" }
+    : { width: 520, maxWidth: "95vw", background: "#1a1d23", height: "100%", display: "flex", flexDirection: "column", animation: "slideIn .2s ease", borderLeft: "1px solid #2a2d35" };
+
+  const d = data || {};
+  const maxDay = d.byDay ? Math.max(1, ...d.byDay.map(x => x.value)) : 1;
+  const maxUser = d.perUser ? Math.max(1, ...d.perUser.map(x => x.value)) : 1;
+  const maxTask = d.perTask ? Math.max(1, ...d.perTask.map(x => x.value)) : 1;
+
+  return (
+    <div style={container} onClick={!fullscreen ? onClose : undefined}>
+      <div style={inner} onClick={e => e.stopPropagation()}>
+        {/* Header */}
+        <div style={{ padding: "16px 20px", borderBottom: "1px solid #2a2d35", display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ width: 36, height: 36, borderRadius: 8, background: "linear-gradient(135deg, #00c875, #579bfc)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3v18h18"/><path d="M7 14l3-3 4 4 5-6"/></svg>
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 700, fontSize: 15, color: "#e8eaed" }}>Relatório Diário</div>
+            <div style={{ fontSize: 11, color: "#778ca3" }}>
+              {d.lastRolloverDate ? `Último fechamento: ${fmtBR(d.lastRolloverDate)}` : "Sem fechamentos ainda"}
+            </div>
+          </div>
+          <button onClick={onToggleFullscreen} title={fullscreen ? "Reduzir" : "Expandir"} style={{ background: "none", border: "1px solid #3a3d45", color: "#a5b1c2", fontSize: 12, cursor: "pointer", padding: "5px 10px", borderRadius: 6 }}>
+            {fullscreen ? "⤡ Reduzir" : "⤢ Tela cheia"}
+          </button>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "#778ca3", fontSize: 22, cursor: "pointer", padding: "4px 8px" }}>×</button>
+        </div>
+
+        {/* Controls */}
+        <div style={{ padding: "12px 20px", borderBottom: "1px solid #2a2d35", display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <div style={{ display: "flex", background: "#13151a", borderRadius: 7, overflow: "hidden", border: "1px solid #2a2d35" }}>
+            {periods.map(p => (
+              <button key={p.key} onClick={() => setPeriod(p.key)}
+                style={{ padding: "6px 14px", border: "none", cursor: "pointer", fontSize: 12, fontWeight: 600, background: period === p.key ? "#00c875" : "transparent", color: period === p.key ? "#fff" : "#778ca3" }}>
+                {p.label}
+              </button>
+            ))}
+          </div>
+          <input type="date" value={date} onChange={e => setDate(e.target.value)}
+            style={{ background: "#13151a", border: "1px solid #2a2d35", color: "#e8eaed", padding: "6px 10px", borderRadius: 7, fontSize: 12 }} />
+          {d.start && d.end && d.start !== d.end && (
+            <span style={{ fontSize: 11, color: "#778ca3" }}>{fmtBR(d.start)} → {fmtBR(d.end)}</span>
+          )}
+        </div>
+
+        {/* Body */}
+        <div style={{ flex: 1, overflow: "auto", padding: "16px 20px", display: "flex", flexDirection: "column", gap: 18 }}>
+          {loading && <div style={{ textAlign: "center", color: "#778ca3", padding: 40, fontSize: 13 }}>Carregando…</div>}
+          {!loading && d.error && <div style={{ textAlign: "center", color: "#e2445c", padding: 40, fontSize: 13 }}>Erro ao carregar relatório.</div>}
+          {!loading && !d.error && (
+            <>
+              {/* Summary card */}
+              <div style={{ background: "#1a1d23", borderRadius: 10, padding: 16, border: "1px solid #2a2d35", display: "flex", gap: 20, flexWrap: "wrap" }}>
+                <div>
+                  <div style={{ fontSize: 11, color: "#778ca3", fontWeight: 600 }}>TOTAL NO PERÍODO</div>
+                  <div style={{ fontSize: 28, fontWeight: 800, color: "#00c875" }}>{Math.round((d.total || 0) * 100) / 100}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, color: "#778ca3", fontWeight: 600 }}>DIAS COM ATIVIDADE</div>
+                  <div style={{ fontSize: 28, fontWeight: 800, color: "#579bfc" }}>{(d.byDay || []).filter(x => x.value > 0).length}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, color: "#778ca3", fontWeight: 600 }}>RESPONSÁVEIS</div>
+                  <div style={{ fontSize: 28, fontWeight: 800, color: "#fdab3d" }}>{(d.perUser || []).length}</div>
+                </div>
+              </div>
+
+              {/* Per day */}
+              {(d.byDay || []).length > 0 && (
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "#e8eaed", marginBottom: 8 }}>POR DIA</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    {d.byDay.map(x => (
+                      <div key={x.date} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12 }}>
+                        <div style={{ width: 80, color: "#a5b1c2" }}>{fmtBR(x.date)}</div>
+                        <div style={{ flex: 1, background: "#13151a", height: 16, borderRadius: 4, overflow: "hidden" }}>
+                          <div style={{ width: `${(x.value / maxDay) * 100}%`, height: "100%", background: "linear-gradient(90deg, #00c875, #579bfc)" }} />
+                        </div>
+                        <div style={{ width: 60, textAlign: "right", color: "#e8eaed", fontWeight: 600 }}>{Math.round(x.value * 100) / 100}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Per user */}
+              {(d.perUser || []).length > 0 && (
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "#e8eaed", marginBottom: 8 }}>DESEMPENHO POR RESPONSÁVEL</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {d.perUser.map(x => (
+                      <div key={x.name} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12 }}>
+                        <div style={{ width: 140, color: "#e8eaed", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{x.name}</div>
+                        <div style={{ flex: 1, background: "#13151a", height: 16, borderRadius: 4, overflow: "hidden" }}>
+                          <div style={{ width: `${(x.value / maxUser) * 100}%`, height: "100%", background: "linear-gradient(90deg, #fdab3d, #e2445c)" }} />
+                        </div>
+                        <div style={{ width: 60, textAlign: "right", color: "#e8eaed", fontWeight: 700 }}>{x.value}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ fontSize: 10, color: "#556", marginTop: 6 }}>Valor dividido igualmente quando há co-responsáveis.</div>
+                </div>
+              )}
+
+              {/* Per task/subitem (more detail in fullscreen) */}
+              {(d.perTask || []).length > 0 && (
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "#e8eaed", marginBottom: 8 }}>POR TAREFA / SUBITEM / COLUNA</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    {(fullscreen ? d.perTask : d.perTask.slice(0, 10)).map((x, i) => (
+                      <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 11, padding: "6px 8px", background: "#1a1d23", borderRadius: 6, border: "1px solid #23262e" }}>
+                        <div style={{ flex: 1, overflow: "hidden" }}>
+                          <div style={{ color: "#e8eaed", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{x.task_name || x.task_id}</div>
+                          <div style={{ color: "#778ca3", fontSize: 10, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {x.subitem_name ? `${x.subitem_name} · ` : ""}{x.column_name || x.column_id}
+                          </div>
+                        </div>
+                        <div style={{ width: fullscreen ? 180 : 80, background: "#13151a", height: 12, borderRadius: 3, overflow: "hidden" }}>
+                          <div style={{ width: `${(x.value / maxTask) * 100}%`, height: "100%", background: "#579bfc" }} />
+                        </div>
+                        <div style={{ width: 60, textAlign: "right", color: "#e8eaed", fontWeight: 700 }}>{Math.round(x.value * 100) / 100}</div>
+                      </div>
+                    ))}
+                    {!fullscreen && d.perTask.length > 10 && (
+                      <div style={{ fontSize: 10, color: "#556", marginTop: 4, textAlign: "center" }}>+{d.perTask.length - 10} itens — expanda para ver todos</div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {(!d.perTask || d.perTask.length === 0) && (
+                <div style={{ textAlign: "center", padding: "40px 20px", color: "#556" }}>
+                  <div style={{ fontSize: 40, marginBottom: 10 }}>📊</div>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: "#778ca3" }}>Sem dados para este período</div>
+                  <div style={{ fontSize: 12, color: "#556", marginTop: 4 }}>O relatório começa a acumular a partir do primeiro fechamento diário (00:00 BRT).</div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AdminPanel({ users, onUpdateRole, onClose, currentUser }) {
   const [confirmAction, setConfirmAction] = useState(null);
 
@@ -2570,6 +2746,8 @@ function Dashboard({ currentUser, onLogout }) {
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showDrive, setShowDrive] = useState(false);
   const [showAdminPanel, setShowAdminPanel] = useState(false);
+  const [showReports, setShowReports] = useState(false);
+  const [reportsFullscreen, setReportsFullscreen] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
   const [users, setUsers] = useState([]);
   const [dataLoaded, setDataLoaded] = useState(false);
@@ -2874,6 +3052,15 @@ function Dashboard({ currentUser, onLogout }) {
           {showNotifs && <NotificationPanel tasks={tasks} currentUser={currentUser.name} onClose={() => setShowNotifs(false)} onOpenUpdates={(tid, sid) => openUpdates(tid, sid)} />}
         </div>
 
+        {isAdmin && (
+          <div onClick={() => setShowReports(true)} title="Relatório diário" style={{ cursor: "pointer", width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 8, background: showReports ? "rgba(0,200,117,.15)" : "transparent", transition: "background .15s" }}
+            onMouseEnter={e => e.currentTarget.style.background = "rgba(0,200,117,.1)"} onMouseLeave={e => { if (!showReports) e.currentTarget.style.background = "transparent"; }}>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={showReports ? "#00c875" : "#778ca3"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3 3v18h18"/><path d="M7 14l3-3 4 4 5-6"/>
+            </svg>
+          </div>
+        )}
+
         <button onClick={() => setShowDrive(true)} style={{ background: "rgba(66,133,244,.1)", color: "#4285f4", border: "1px solid rgba(66,133,244,.25)", borderRadius: 7, padding: "6px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 5 }}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="#4285f4"><path d="M7.71 3.5L1.15 15l2.76 4.5h6.06L7.71 3.5zM8.8 3.5h6.06l6.56 12h-6.06L8.8 3.5zM16.62 16h-6.06l-2.76 4.5h6.06L16.62 16z" opacity=".9"/></svg>
           Drive
@@ -2955,6 +3142,7 @@ function Dashboard({ currentUser, onLogout }) {
       }} onClose={() => setUpdatesTarget(null)} allPeople={allPeople} />}
       {showDrive && <GoogleDrivePanel onClose={() => setShowDrive(false)} />}
       {showAdminPanel && isAdmin && <AdminPanel users={users} onUpdateRole={apiUpdateUserRole} onClose={() => setShowAdminPanel(false)} currentUser={currentUser.name} />}
+      {showReports && isAdmin && <ReportsPanel fullscreen={reportsFullscreen} onToggleFullscreen={() => setReportsFullscreen(f => !f)} onClose={() => { setShowReports(false); setReportsFullscreen(false); }} />}
       {showProfile && <ProfileEditor userData={currentUserData} onSave={apiUpdateUserProfile} onClose={() => setShowProfile(false)} allUsers={users} />}
 
       <style>{`
