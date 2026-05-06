@@ -2259,10 +2259,15 @@ function AdminPanel({ users, onUpdateRole, onCreateUser, onDeleteUser, onClose, 
     if (!newName.trim() || !newEmail.trim() || !newPass) { setCreateErr("Preencha nome, email e senha"); return; }
     if (newPass.length < 4) { setCreateErr("Senha deve ter pelo menos 4 caracteres"); return; }
     setCreating(true);
-    const r = await onCreateUser({ name: newName.trim(), email: newEmail.trim(), password: newPass, role: newRole });
-    setCreating(false);
-    if (r?.error) { setCreateErr(r.error); return; }
-    setNewName(""); setNewEmail(""); setNewPass(""); setNewRole("collaborator"); setShowCreate(false);
+    try {
+      const r = await onCreateUser({ name: newName.trim(), email: newEmail.trim(), password: newPass, role: newRole });
+      if (r?.error) { setCreateErr(r.error); return; }
+      setNewName(""); setNewEmail(""); setNewPass(""); setNewRole("collaborator"); setShowCreate(false);
+    } catch (e) {
+      setCreateErr("Erro inesperado: " + (e?.message || "tente novamente"));
+    } finally {
+      setCreating(false);
+    }
   };
 
   const handleDelete = (user) => {
@@ -3210,11 +3215,16 @@ function CreateUserModal({ onClose, onCreate }) {
     if (!name.trim() || !email.trim() || !password) { setErr("Preencha todos os campos"); return; }
     if (password.length < 4) { setErr("Senha deve ter pelo menos 4 caracteres"); return; }
     setBusy(true); setErr("");
-    const res = await onCreate({ name: name.trim(), email: email.trim(), password, role });
-    setBusy(false);
-    if (res?.error) { setErr(res.error); return; }
-    setOk(true);
-    setTimeout(() => onClose(), 900);
+    try {
+      const res = await onCreate({ name: name.trim(), email: email.trim(), password, role });
+      if (res?.error) { setErr(res.error); return; }
+      setOk(true);
+      setTimeout(() => onClose(), 900);
+    } catch (e) {
+      setErr("Erro inesperado: " + (e?.message || "tente novamente"));
+    } finally {
+      setBusy(false);
+    }
   };
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, backdropFilter: "blur(4px)" }} onClick={onClose}>
@@ -3536,7 +3546,9 @@ function Dashboard({ currentUser, onLogout }) {
 
   const apiCreateUser = async ({ name, email, password, role }) => {
     const res = await apiCall('/users', { method: 'POST', body: JSON.stringify({ name, email, password, role }) });
-    if (res?.error) return { error: res.error };
+    // apiCall returns null on 401/5xx/network error. Without this guard, the
+    // sort below threw on null.name and the modal hung in "Cadastrando...".
+    if (!res || res.error) return { error: res?.error || 'Erro ao criar usuário. Verifique sua conexão e tente novamente.' };
     setUsers(prev => [...prev, res].sort((a, b) => a.name.localeCompare(b.name)));
     if (res.avatar_color) PEOPLE_COLORS[res.name] = res.avatar_color;
     return { user: res };
