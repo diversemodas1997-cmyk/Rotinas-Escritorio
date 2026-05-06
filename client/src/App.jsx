@@ -5,19 +5,44 @@ const API_URL = window.location.hostname === "localhost" ? "http://localhost:300
 let _token = localStorage.getItem("rotina_token");
 
 let _inFlightMutations = 0;
+let _syncFailed = 0;
+let _isOnline = typeof navigator !== "undefined" ? navigator.onLine : true;
+const _syncListeners = new Set();
+function _notifySync() { _syncListeners.forEach(fn => { try { fn(); } catch {} }); }
+function getSyncStatus() {
+  if (!_isOnline) return { state: "offline", inFlight: _inFlightMutations, failed: _syncFailed };
+  if (_syncFailed > 0) return { state: "error", inFlight: _inFlightMutations, failed: _syncFailed };
+  if (_inFlightMutations > 0) return { state: "saving", inFlight: _inFlightMutations, failed: 0 };
+  return { state: "idle", inFlight: 0, failed: 0 };
+}
+function subscribeSyncStatus(fn) { _syncListeners.add(fn); return () => _syncListeners.delete(fn); }
+function clearSyncFailed() { if (_syncFailed > 0) { _syncFailed = 0; _notifySync(); } }
+
 async function apiCall(path, opts = {}) {
   const h = { "Content-Type": "application/json" };
   if (_token) h["Authorization"] = `Bearer ${_token}`;
   const isMutation = opts.method && opts.method.toUpperCase() !== "GET";
-  if (isMutation) _inFlightMutations++;
+  if (isMutation) { _inFlightMutations++; _notifySync(); }
   try {
     const res = await fetch(`${API_URL}/api${path}`, { ...opts, headers: { ...h, ...opts.headers } });
     if (res.status === 401) { _token = null; localStorage.removeItem("rotina_token"); return null; }
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "Erro");
+    if (!res.ok) {
+      // 5xx = server-side fault → flag as unsaved so the user knows
+      if (isMutation && res.status >= 500) { _syncFailed++; }
+      throw new Error(data.error || "Erro");
+    }
+    if (isMutation && _syncFailed > 0) { _syncFailed = 0; }
     return data;
-  } catch (e) { console.error("API error:", e.message); return null; }
-  finally { if (isMutation) _inFlightMutations--; }
+  } catch (e) {
+    // Network error (fetch threw) on a mutation → treat as unsaved
+    if (isMutation && (e.name === "TypeError" || /Failed to fetch|NetworkError/i.test(e.message || ""))) {
+      _syncFailed++;
+    }
+    console.error("API error:", e.message);
+    return null;
+  }
+  finally { if (isMutation) { _inFlightMutations--; _notifySync(); } }
 }
 function hasInFlightMutations() { return _inFlightMutations > 0; }
 function setToken(t) { _token = t; if (t) localStorage.setItem("rotina_token", t); else localStorage.removeItem("rotina_token"); }
@@ -2567,15 +2592,21 @@ function ProfileEditor({ userData, onSave, onClose, allUsers }) {
 
 // ─── LOGIN SCREEN ────────────────────────────────────────────────────────────
 function LoginScreen({ onLogin }) {
+  const [mode, setMode] = useState("login"); // "login" | "signup"
+  const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPass, setConfirmPass] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [showPass, setShowPass] = useState(false);
+  const [focusName, setFocusName] = useState(false);
   const [focusEmail, setFocusEmail] = useState(false);
   const [focusPass, setFocusPass] = useState(false);
+  const [focusConfirm, setFocusConfirm] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
   const googleBtnRef = useRef(null);
+  const isSignup = mode === "signup";
 
   // Load Google Identity Services
   useEffect(() => {
@@ -2634,6 +2665,25 @@ function LoginScreen({ onLogin }) {
   };
 
   const handleSubmit = async () => {
+    if (isSignup) {
+      if (!name.trim() || !email.trim() || !password.trim()) { setError("Preencha todos os campos"); return; }
+      if (name.trim().length < 2) { setError("Nome muito curto"); return; }
+      if (password.length < 6) { setError("Senha deve ter pelo menos 6 caracteres"); return; }
+      if (password !== confirmPass) { setError("As senhas não coincidem"); return; }
+      setLoading(true); setError("");
+      try {
+        const res = await fetch(`${API_URL}/api/auth/register`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: name.trim(), email: email.trim(), password }),
+        });
+        const data = await res.json();
+        if (!res.ok) { setError(data.error || "Falha ao criar conta"); setLoading(false); return; }
+        setToken(data.token);
+        onLogin(data.user);
+      } catch { setError("Erro de conexão. Tente novamente."); }
+      setLoading(false);
+      return;
+    }
     if (!email.trim() || !password.trim()) { setError("Preencha todos os campos"); return; }
     setLoading(true); setError("");
     try {
@@ -2649,6 +2699,10 @@ function LoginScreen({ onLogin }) {
       }
     } catch { setError("E-mail ou senha incorretos"); }
     setLoading(false);
+  };
+
+  const switchMode = (next) => {
+    setMode(next); setError(""); setName(""); setConfirmPass("");
   };
 
   return (
@@ -2672,8 +2726,23 @@ function LoginScreen({ onLogin }) {
 
         {/* Card */}
         <div style={{ background: "#1a1d23", borderRadius: 20, padding: "36px 32px", border: "1px solid #2a2d35", boxShadow: "0 20px 60px rgba(0,0,0,.5)" }}>
-          <div style={{ fontWeight: 700, fontSize: 20, color: "#e8eaed", marginBottom: 4 }}>Bem-vindo de volta</div>
-          <div style={{ fontSize: 13, color: "#778ca3", marginBottom: 28 }}>Faça login para acessar seu espaço de trabalho</div>
+          <div style={{ fontWeight: 700, fontSize: 20, color: "#e8eaed", marginBottom: 4 }}>{isSignup ? "Criar sua conta" : "Bem-vindo de volta"}</div>
+          <div style={{ fontSize: 13, color: "#778ca3", marginBottom: 28 }}>{isSignup ? "Cadastre-se para acessar seu espaço de trabalho" : "Faça login para acessar seu espaço de trabalho"}</div>
+
+          {/* Name (signup only) */}
+          {isSignup && (
+            <div style={{ marginBottom: 18 }}>
+              <label style={{ fontSize: 12, fontWeight: 600, color: focusName ? "#6c5ce7" : "#778ca3", display: "block", marginBottom: 6, transition: "color .2s" }}>Nome completo</label>
+              <div style={{ position: "relative" }}>
+                <div style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", color: focusName ? "#6c5ce7" : "#556" }}>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                </div>
+                <input value={name} onChange={e => { setName(e.target.value); setError(""); }} onFocus={() => setFocusName(true)} onBlur={() => setFocusName(false)} onKeyDown={e => e.key === "Enter" && handleSubmit()}
+                  placeholder="Seu nome" type="text"
+                  style={{ width: "100%", padding: "13px 14px 13px 42px", borderRadius: 12, border: `2px solid ${focusName ? "#6c5ce7" : error ? "#e2445c" : "#333"}`, background: "#13151a", color: "#e8eaed", fontSize: 14, outline: "none", transition: "border-color .2s", boxSizing: "border-box" }} />
+              </div>
+            </div>
+          )}
 
           {/* Email */}
           <div style={{ marginBottom: 18 }}>
@@ -2708,9 +2777,24 @@ function LoginScreen({ onLogin }) {
             </div>
           </div>
 
-          {/* Forgot */}
-          <div style={{ textAlign: "right", marginBottom: 22 }}>
-            <span style={{ fontSize: 12, color: "#6c5ce7", cursor: "pointer", fontWeight: 500 }}>Esqueceu a senha?</span>
+          {/* Confirm password (signup only) */}
+          {isSignup && (
+            <div style={{ marginBottom: 10 }}>
+              <label style={{ fontSize: 12, fontWeight: 600, color: focusConfirm ? "#6c5ce7" : "#778ca3", display: "block", marginBottom: 6, transition: "color .2s" }}>Confirmar senha</label>
+              <div style={{ position: "relative" }}>
+                <div style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", color: focusConfirm ? "#6c5ce7" : "#556" }}>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                </div>
+                <input value={confirmPass} onChange={e => { setConfirmPass(e.target.value); setError(""); }} onFocus={() => setFocusConfirm(true)} onBlur={() => setFocusConfirm(false)} onKeyDown={e => e.key === "Enter" && handleSubmit()}
+                  placeholder="••••••" type={showPass ? "text" : "password"}
+                  style={{ width: "100%", padding: "13px 14px 13px 42px", borderRadius: 12, border: `2px solid ${focusConfirm ? "#6c5ce7" : error ? "#e2445c" : "#333"}`, background: "#13151a", color: "#e8eaed", fontSize: 14, outline: "none", transition: "border-color .2s", boxSizing: "border-box" }} />
+              </div>
+            </div>
+          )}
+
+          {/* Forgot / spacer */}
+          <div style={{ textAlign: "right", marginBottom: 22, marginTop: isSignup ? 12 : 0 }}>
+            {!isSignup && <span style={{ fontSize: 12, color: "#6c5ce7", cursor: "pointer", fontWeight: 500 }}>Esqueceu a senha?</span>}
           </div>
 
           {/* Error */}
@@ -2725,18 +2809,30 @@ function LoginScreen({ onLogin }) {
           <button onClick={handleSubmit} disabled={loading}
             style={{ width: "100%", padding: "14px", borderRadius: 12, border: "none", background: loading ? "#444" : "linear-gradient(135deg, #6c5ce7, #a55eea)", color: "#fff", fontSize: 15, fontWeight: 700, cursor: loading ? "wait" : "pointer", transition: "all .2s", boxShadow: loading ? "none" : "0 4px 20px rgba(108,92,231,.4)", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
             {loading ? (
-              <><div style={{ width: 18, height: 18, border: "2px solid rgba(255,255,255,.3)", borderTop: "2px solid #fff", borderRadius: "50%", animation: "spin .6s linear infinite" }} /> Entrando...</>
-            ) : "Entrar"}
+              <><div style={{ width: 18, height: 18, border: "2px solid rgba(255,255,255,.3)", borderTop: "2px solid #fff", borderRadius: "50%", animation: "spin .6s linear infinite" }} /> {isSignup ? "Criando..." : "Entrando..."}</>
+            ) : (isSignup ? "Criar conta" : "Entrar")}
           </button>
 
+          {/* Switch login/signup */}
+          <div style={{ textAlign: "center", marginTop: 14 }}>
+            {isSignup ? (
+              <span style={{ fontSize: 12, color: "#778ca3" }}>Já tem conta? <span onClick={() => switchMode("login")} style={{ color: "#6c5ce7", cursor: "pointer", fontWeight: 600 }}>Entrar</span></span>
+            ) : (
+              <span style={{ fontSize: 12, color: "#778ca3" }}>Não tem conta? <span onClick={() => switchMode("signup")} style={{ color: "#6c5ce7", cursor: "pointer", fontWeight: 600 }}>Criar conta</span></span>
+            )}
+          </div>
+
           {/* Divider */}
+          {!isSignup && (
           <div style={{ display: "flex", alignItems: "center", gap: 12, margin: "20px 0" }}>
             <div style={{ flex: 1, height: 1, background: "#333" }} />
             <span style={{ fontSize: 12, color: "#556", fontWeight: 500 }}>ou</span>
             <div style={{ flex: 1, height: 1, background: "#333" }} />
           </div>
+          )}
 
           {/* Google Sign-In */}
+          {!isSignup && (
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
             {/* Google Identity Services rendered button */}
             <div ref={googleBtnRef} style={{ minHeight: 44 }} />
@@ -2757,9 +2853,11 @@ function LoginScreen({ onLogin }) {
               </button>
             )}
           </div>
+          )}
         </div>
 
         {/* Demo accounts */}
+        {!isSignup && (
         <div style={{ marginTop: 24, background: "#1a1d2380", borderRadius: 14, padding: "16px 20px", border: "1px solid #2a2d35" }}>
           <div style={{ fontSize: 11, fontWeight: 700, color: "#778ca3", textTransform: "uppercase", letterSpacing: ".5px", marginBottom: 10 }}>Contas de demonstração</div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
@@ -2774,6 +2872,7 @@ function LoginScreen({ onLogin }) {
           </div>
           <div style={{ fontSize: 10, color: "#556", marginTop: 8, textAlign: "center" }}>Senha padrão: 123456</div>
         </div>
+        )}
       </div>
 
       <style>{`
@@ -2784,6 +2883,69 @@ function LoginScreen({ onLogin }) {
         * { box-sizing: border-box; }
         ::placeholder { color: #556; }
       `}</style>
+    </div>
+  );
+}
+
+// ─── SYNC INDICATOR ──────────────────────────────────────────────────────────
+function useSyncStatus() {
+  const [status, setStatus] = useState(() => getSyncStatus());
+  useEffect(() => {
+    const update = () => setStatus(getSyncStatus());
+    const unsub = subscribeSyncStatus(update);
+    const onOnline = () => { _isOnline = true; _notifySync(); };
+    const onOffline = () => { _isOnline = false; _notifySync(); };
+    window.addEventListener("online", onOnline);
+    window.addEventListener("offline", onOffline);
+    return () => { unsub(); window.removeEventListener("online", onOnline); window.removeEventListener("offline", onOffline); };
+  }, []);
+  return status;
+}
+
+function SyncIndicator() {
+  const { state, inFlight, failed } = useSyncStatus();
+  const cfg = {
+    idle:    { color: "#00c875", bg: "rgba(0,200,117,.1)",  border: "rgba(0,200,117,.3)" },
+    saving:  { color: "#fdab3d", bg: "rgba(253,171,61,.12)", border: "rgba(253,171,61,.35)" },
+    offline: { color: "#e2445c", bg: "rgba(226,68,92,.12)",  border: "rgba(226,68,92,.4)"  },
+    error:   { color: "#e2445c", bg: "rgba(226,68,92,.12)",  border: "rgba(226,68,92,.4)"  },
+  }[state];
+  const label =
+    state === "idle"    ? "Salvo"
+    : state === "saving" ? (inFlight > 1 ? `Salvando (${inFlight})...` : "Salvando...")
+    : state === "offline" ? "Sem conexão"
+    : `${failed} não salvo${failed > 1 ? "s" : ""}`;
+  const tip =
+    state === "idle"    ? "Tudo sincronizado com o servidor."
+    : state === "saving" ? "Enviando suas alterações..."
+    : state === "offline" ? "Você está sem conexão. Suas alterações podem não ser salvas — aguarde a conexão voltar antes de continuar."
+    : `${failed} alteração(ões) não foram salvas no servidor. Tente repetir a ação. Se persistir, recarregue a página.`;
+  const Icon = () => {
+    if (state === "saving") return (
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={cfg.color} strokeWidth="2.5" strokeLinecap="round" style={{ animation: "syncSpin 1s linear infinite" }}>
+        <path d="M21 12a9 9 0 1 1-3-6.7" /><path d="M21 4v5h-5" />
+      </svg>
+    );
+    if (state === "offline") return (
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={cfg.color} strokeWidth="2.5" strokeLinecap="round">
+        <path d="M1 1l22 22" /><path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55" /><path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39" /><path d="M10.71 5.05A16 16 0 0 1 22.58 9" /><path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88" /><path d="M8.53 16.11a6 6 0 0 1 6.95 0" /><circle cx="12" cy="20" r="1" />
+      </svg>
+    );
+    if (state === "error") return (
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={cfg.color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" />
+      </svg>
+    );
+    return (
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={cfg.color} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+        <polyline points="20 6 9 17 4 12" />
+      </svg>
+    );
+  };
+  return (
+    <div title={tip} onClick={state === "error" ? () => clearSyncFailed() : undefined} style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 9px", borderRadius: 14, background: cfg.bg, border: `1px solid ${cfg.border}`, color: cfg.color, fontSize: 11, fontWeight: 600, cursor: state === "error" ? "pointer" : "default", userSelect: "none", transition: "background .15s, border-color .15s" }}>
+      <Icon />
+      <span>{label}</span>
     </div>
   );
 }
@@ -2861,11 +3023,11 @@ function BoardsSidebar({ folders, boards, currentBoardId, onSelectBoard, onNewBo
 }
 
 // ─── NEW BOARD MODAL ─────────────────────────────────────────────────────────
-function NewBoardModal({ folders, boards, defaultFolderId, onClose, onCreate }) {
+function NewBoardModal({ folders, boards, defaultFolderId, defaultMode, onClose, onCreate }) {
   const [name, setName] = useState("");
   const [icon, setIcon] = useState("📋");
   const [folderId, setFolderId] = useState(defaultFolderId || folders[0]?.id || "");
-  const [mode, setMode] = useState("blank"); // 'blank' | 'copy'
+  const [mode, setMode] = useState(defaultMode || "blank"); // 'blank' | 'copy'
   const [copyFromId, setCopyFromId] = useState(boards[0]?.id || "");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -3039,6 +3201,9 @@ function Dashboard({ currentUser, onLogout }) {
   const [collapsedFolders, setCollapsedFolders] = useState({});
   const [showNewBoard, setShowNewBoard] = useState(false);
   const [newBoardFolderId, setNewBoardFolderId] = useState(null);
+  const [newBoardMode, setNewBoardMode] = useState("blank");
+  const [showBoardPicker, setShowBoardPicker] = useState(false);
+  const boardPickerRef = useRef(null);
   const [showNewFolder, setShowNewFolder] = useState(false);
   const [renameBoardTarget, setRenameBoardTarget] = useState(null);
   const [renameFolderTarget, setRenameFolderTarget] = useState(null);
@@ -3047,6 +3212,7 @@ function Dashboard({ currentUser, onLogout }) {
   const userMenuRef = useRef(null);
   useClickOutside(notifRef, () => setShowNotifs(false));
   useClickOutside(userMenuRef, () => setShowUserMenu(false));
+  useClickOutside(boardPickerRef, () => setShowBoardPicker(false));
 
   const normalizeTasks = (data) => data.map(t => ({ ...t, custom: t.custom || {}, updates: t.updates || [], subitems: (t.subitems || []).map(s => ({ ...s, custom: s.custom || {}, updates: s.updates || [], cancellations: s.cancellations || 0 })) }));
 
@@ -3376,6 +3542,7 @@ function Dashboard({ currentUser, onLogout }) {
           <div style={{ width: 30, height: 30, borderRadius: 7, background: "linear-gradient(135deg, #6c5ce7, #e2445c)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 14, color: "#fff" }}>R</div>
           <div><div style={{ fontWeight: 700, fontSize: 14, lineHeight: 1.2 }}>Rotina Escritório</div><div style={{ fontSize: 10, color: "#778ca3" }}>Gerenciamento de tarefas</div></div>
         </div>
+        <SyncIndicator />
         <div style={{ flex: 1 }} />
 
         {/* User indicator with menu */}
@@ -3473,6 +3640,64 @@ function Dashboard({ currentUser, onLogout }) {
             <button key={v.key} onClick={() => setView(v.key)} style={{ padding: "7px 12px", border: "none", cursor: "pointer", fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", gap: 4, background: view === v.key ? "#6c5ce7" : "transparent", color: view === v.key ? "#fff" : "#778ca3" }}><span>{v.icon}</span> {v.label}</button>
           ))}
         </div>
+
+        {/* Board picker dropdown */}
+        <div ref={boardPickerRef} style={{ position: "relative" }}>
+          {(() => {
+            const cb = boards.find(b => b.id === currentBoardId);
+            return (
+              <button onClick={() => setShowBoardPicker(s => !s)} title="Trocar de quadro" style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", border: "1px solid #2a2d35", borderRadius: 7, background: showBoardPicker ? "rgba(108,92,231,.15)" : "#13151a", color: "#e8eaed", fontSize: 12, fontWeight: 600, cursor: "pointer", maxWidth: 220 }}>
+                <span style={{ fontSize: 14 }}>{cb?.icon || "📋"}</span>
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{cb?.name || "Quadro"}</span>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#778ca3" strokeWidth="2.5" strokeLinecap="round"><path d="m6 9 6 6 6-6"/></svg>
+              </button>
+            );
+          })()}
+          {showBoardPicker && (
+            <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, minWidth: 260, maxHeight: 360, overflowY: "auto", background: "#1a1d23", border: "1px solid #2a2d35", borderRadius: 8, boxShadow: "0 8px 30px rgba(0,0,0,.5)", padding: "6px 0", zIndex: 50 }}>
+              {folders.map(f => {
+                const fb = boards.filter(b => b.folderId === f.id);
+                if (fb.length === 0) return null;
+                return (
+                  <div key={f.id}>
+                    <div style={{ padding: "6px 12px 4px", fontSize: 10, color: "#778ca3", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, display: "flex", alignItems: "center", gap: 6 }}>
+                      <span>{f.icon}</span><span>{f.name}</span>
+                    </div>
+                    {fb.map(b => {
+                      const active = b.id === currentBoardId;
+                      return (
+                        <div key={b.id} onClick={() => { switchBoard(b.id); setShowBoardPicker(false); }}
+                          style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 14px", cursor: "pointer", color: active ? "#fff" : "#c8cdd4", background: active ? "rgba(108,92,231,.15)" : "transparent", fontSize: 12, fontWeight: active ? 600 : 500 }}
+                          onMouseEnter={e => { if (!active) e.currentTarget.style.background = "rgba(255,255,255,.04)"; }}
+                          onMouseLeave={e => { if (!active) e.currentTarget.style.background = "transparent"; }}>
+                          <span style={{ fontSize: 13 }}>{b.icon}</span>
+                          <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{b.name}</span>
+                          {active && <span style={{ color: "#6c5ce7", fontWeight: 700 }}>✓</span>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })}
+              {isAdmin && (
+                <>
+                  <div style={{ borderTop: "1px solid #2a2d35", margin: "6px 0" }} />
+                  <div onClick={() => { setShowBoardPicker(false); setNewBoardFolderId(null); setNewBoardMode("blank"); setShowNewBoard(true); }}
+                    style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 14px", cursor: "pointer", color: "#6c5ce7", fontSize: 12, fontWeight: 600 }}
+                    onMouseEnter={e => e.currentTarget.style.background = "rgba(108,92,231,.08)"} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                    <span>＋</span><span>Novo quadro</span>
+                  </div>
+                  <div onClick={() => { setShowBoardPicker(false); setNewBoardFolderId(null); setNewBoardMode("copy"); setShowNewBoard(true); }}
+                    style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 14px", cursor: "pointer", color: "#6c5ce7", fontSize: 12, fontWeight: 600 }}
+                    onMouseEnter={e => e.currentTarget.style.background = "rgba(108,92,231,.08)"} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                    <span>📋</span><span>Copiar quadro existente</span>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+
         <div style={{ flex: 1 }} />
         {perms.addColumns ? (
           <button onClick={() => setShowAddCol(true)} style={{ background: "transparent", color: "#579bfc", border: "1px solid #579bfc40", borderRadius: 7, padding: "5px 10px", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>+ Coluna</button>
@@ -3536,7 +3761,8 @@ function Dashboard({ currentUser, onLogout }) {
           folders={folders}
           boards={boards}
           defaultFolderId={newBoardFolderId}
-          onClose={() => { setShowNewBoard(false); setNewBoardFolderId(null); }}
+          defaultMode={newBoardMode}
+          onClose={() => { setShowNewBoard(false); setNewBoardFolderId(null); setNewBoardMode("blank"); }}
           onCreate={apiCreateBoard}
         />
       )}
@@ -3590,6 +3816,7 @@ function Dashboard({ currentUser, onLogout }) {
 
       <style>{`
         @keyframes slideIn { from { transform: translateX(20px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+        @keyframes syncSpin { to { transform: rotate(360deg); } }
         * { box-sizing: border-box; }
         ::-webkit-scrollbar { width: 5px; height: 5px; }
         ::-webkit-scrollbar-track { background: #13151a; }

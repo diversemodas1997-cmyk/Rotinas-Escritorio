@@ -384,6 +384,27 @@ function adminOnly(req,res,next){if(req.user.role!=='admin')return res.status(40
 
 app.post('/api/auth/login',(req,res)=>{const{email,password}=req.body;const u=db.prepare('SELECT * FROM users WHERE email=?').get(email?.toLowerCase?.());if(!u||!bcrypt.compareSync(password,u.password))return res.status(401).json({error:'Credenciais inválidas'});const token=jwt.sign({id:u.id,name:u.name,email:u.email,role:u.role},JWT_SECRET,{expiresIn:'7d'});res.json({token,user:{id:u.id,name:u.name,email:u.email,role:u.role,phone:u.phone,department:u.department,bio:u.bio,avatar_color:u.avatar_color}});});
 
+// Public self-registration. New users default to 'collaborator' and must be
+// promoted to 'admin' by an existing admin via /api/users/:id/role.
+app.post('/api/auth/register', (req, res) => {
+  const { name, email, password } = req.body || {};
+  if (!name || !email || !password) return res.status(400).json({ error: 'Nome, email e senha são obrigatórios' });
+  const trimmedName = String(name).trim();
+  const em = String(email).toLowerCase().trim();
+  if (trimmedName.length < 2) return res.status(400).json({ error: 'Nome muito curto' });
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em)) return res.status(400).json({ error: 'Email inválido' });
+  if (String(password).length < 6) return res.status(400).json({ error: 'Senha deve ter pelo menos 6 caracteres' });
+  if (db.prepare('SELECT id FROM users WHERE email=?').get(em)) return res.status(409).json({ error: 'Email já cadastrado' });
+  const colors = ['#ff642e','#fdab3d','#a25ddc','#00c875','#579bfc','#e2445c','#6c5ce7','#00ced1','#ff158a','#037f4c'];
+  const color = colors[Math.floor(Math.random() * colors.length)];
+  const hash = bcrypt.hashSync(password, 10);
+  const info = db.prepare('INSERT INTO users (name,email,password,role,avatar_color) VALUES (?,?,?,?,?)')
+    .run(trimmedName, em, hash, 'collaborator', color);
+  const u = db.prepare('SELECT * FROM users WHERE id=?').get(info.lastInsertRowid);
+  const token = jwt.sign({ id: u.id, name: u.name, email: u.email, role: u.role }, JWT_SECRET, { expiresIn: '7d' });
+  res.json({ token, user: { id: u.id, name: u.name, email: u.email, role: u.role, phone: u.phone || '', department: u.department || '', bio: u.bio || '', avatar_color: u.avatar_color } });
+});
+
 // Google OAuth - verify token and create/login user
 app.post('/api/auth/google', async (req, res) => {
   const { credential } = req.body;
