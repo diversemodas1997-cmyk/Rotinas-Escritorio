@@ -2704,10 +2704,7 @@ function LoginScreen({ onLogin }) {
         setToken(data.token);
         onLogin(data.user);
       } else {
-        // Fallback to local auth if API is unavailable
-        const user = REGISTERED_USERS.find(u => u.email.toLowerCase() === email.toLowerCase().trim() && u.password === password);
-        if (user) { onLogin({ name: user.name, email: user.email, role: user.role, id: 0 }); }
-        else { setError("E-mail ou senha incorretos"); }
+        setError("E-mail ou senha incorretos");
       }
     } catch { setError("E-mail ou senha incorretos"); }
     setLoading(false);
@@ -2868,23 +2865,6 @@ function LoginScreen({ onLogin }) {
           )}
         </div>
 
-        {/* Demo accounts */}
-        {!isSignup && (
-        <div style={{ marginTop: 24, background: "#1a1d2380", borderRadius: 14, padding: "16px 20px", border: "1px solid #2a2d35" }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: "#778ca3", textTransform: "uppercase", letterSpacing: ".5px", marginBottom: 10 }}>Contas de demonstração</div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
-            {REGISTERED_USERS.map(u => (
-              <div key={u.name} onClick={() => { setEmail(u.email); setPassword(u.password); setError(""); }}
-                style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 8px", borderRadius: 8, cursor: "pointer", transition: "background .15s" }}
-                onMouseEnter={e => e.currentTarget.style.background = "rgba(108,92,231,.12)"} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-                <div style={{ width: 24, height: 24, borderRadius: "50%", background: PEOPLE_COLORS[u.name] || "#888", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: 11, fontWeight: 700, border: u.role === "admin" ? "2px solid #e2445c" : "none" }}>{u.name[0]}</div>
-                <div style={{ flex: 1 }}><div style={{ fontSize: 12, fontWeight: 600, color: "#e8eaed", display: "flex", alignItems: "center", gap: 4 }}>{u.name} <RoleBadge role={u.role} small /></div><div style={{ fontSize: 10, color: "#556" }}>{u.email}</div></div>
-              </div>
-            ))}
-          </div>
-          <div style={{ fontSize: 10, color: "#556", marginTop: 8, textAlign: "center" }}>Senha padrão: 123456</div>
-        </div>
-        )}
       </div>
 
       <style>{`
@@ -3569,7 +3549,10 @@ function Dashboard({ currentUser, onLogout }) {
   const perms = useMemo(() => (ROLE_CONFIG[currentUserData.role] || ROLE_CONFIG.collaborator).permissions, [currentUserData]);
   const isAdmin = currentUserData.role === "admin";
 
-  const allPeople = useMemo(() => { const s = new Set(ALL_PEOPLE); tasks.forEach(t => { (t.responsible || []).forEach(r => s.add(r)); t.subitems.forEach(sub => (sub.responsible || []).forEach(r => s.add(r))); }); return [...s]; }, [tasks]);
+  // Pessoas elegíveis como responsáveis = apenas usuários atualmente cadastrados.
+  // Excluídos somem do picker; nomes legados em tarefas antigas continuam exibidos
+  // na linha onde já estavam, mas não podem ser re-selecionados.
+  const allPeople = useMemo(() => users.map(u => u.name).sort((a, b) => a.localeCompare(b)), [users]);
   const stats = useMemo(() => ({ total: tasks.length, done: tasks.filter(t => t.status === "Feito").length, inProgress: tasks.filter(t => t.status === "Em andamento").length, overdue: tasks.filter(t => t.deadline && daysUntil(t.deadline) < 0).length }), [tasks]);
 
   // Count notifications
