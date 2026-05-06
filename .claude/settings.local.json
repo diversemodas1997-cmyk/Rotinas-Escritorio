@@ -10,7 +10,8 @@
       "PowerShell(\\(Get-Content C:\\\\Users\\\\Pichau\\\\Desktop\\\\Rotinas-Escritorio\\\\client\\\\src\\\\App.jsx | Measure-Object -Line\\).Lines)",
       "Bash(node --check index.js)",
       "Bash(npx --no-install eslint src/App.jsx)",
-      "Bash(CI=true npx --no-install react-scripts build)"
+      "Bash(CI=true npx --no-install react-scripts build)",
+      "Bash(git fetch *)"
     ]
   }
 }
