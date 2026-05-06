@@ -3421,6 +3421,45 @@ function Dashboard({ currentUser, onLogout }) {
     return () => { cancelled = true; clearInterval(id); };
   }, [dataLoaded, currentBoardId]);
 
+  // ─── POLLING: lista de quadros/pastas (acesso em tempo real) ──────────────
+  // Quadros mudam raramente, então interval mais longo. Detecta quando o admin
+  // atribui o usuario como responsavel em um novo quadro (aparece na sidebar)
+  // e quando perde o acesso ao quadro ativo (pula para o primeiro disponivel).
+  useEffect(() => {
+    if (!dataLoaded) return;
+    const POLL_MS = 15000;
+    let cancelled = false;
+    const sameIds = (a, b) => a.length === b.length && a.every((x, i) => x.id === b[i].id);
+    const tick = async () => {
+      if (cancelled) return;
+      if (document.hidden) return;
+      if (hasInFlightMutations()) return;
+      const [boardsData, foldersData] = await Promise.all([
+        apiCall("/boards"), apiCall("/folders"),
+      ]);
+      if (cancelled) return;
+      if (Array.isArray(foldersData)) {
+        setFolders(prev => sameIds(prev, foldersData) ? prev : foldersData);
+      }
+      if (Array.isArray(boardsData)) {
+        setBoards(prev => sameIds(prev, boardsData) ? prev : boardsData);
+        const stillHere = currentBoardId && boardsData.find(b => b.id === currentBoardId);
+        if (!stillHere) {
+          if (boardsData.length > 0) {
+            // Acesso ao quadro atual foi removido OU acabou de ganhar acesso.
+            switchBoard(boardsData[0].id);
+          } else if (currentBoardId) {
+            setCurrentBoardId(null);
+            setTasks([]); setColumns([]); setSubColumns([]);
+          }
+        }
+      }
+    };
+    const id = setInterval(tick, POLL_MS);
+    return () => { cancelled = true; clearInterval(id); };
+    // eslint-disable-next-line
+  }, [dataLoaded, currentBoardId]);
+
   // ─── API-BACKED SETTERS ────────────────────────────────────────────────────
   const apiUpdateTask = (tid, newTask) => {
     setTasks(prev => prev.map(t => t.id === tid ? (typeof newTask === "function" ? newTask(t) : newTask) : t));
