@@ -3338,9 +3338,21 @@ function Dashboard({ currentUser, onLogout }) {
       const boardList = boardsData || [];
       setFolders(folderList);
       setBoards(boardList);
-      // Resolve active board: stored choice if it still exists, else first board, else default.
+
+      // No accessible boards (non-admin without any responsibility): bail out
+      // here so we don't fire 403s for /tasks and /columns.
+      if (boardList.length === 0) {
+        setCurrentBoardId(null);
+        setTasks([]); setColumns([]); setSubColumns([]);
+        if (usersData) setUsers(usersData.map(u => ({ ...u, password: "******" })));
+        if (autoData) setAutomations(autoData);
+        setDataLoaded(true);
+        return;
+      }
+
+      // Resolve active board: stored choice if it still exists, else first board.
       const stored = localStorage.getItem("rotina_board");
-      const initialBoardId = (boardList.find(b => b.id === stored)?.id) || boardList[0]?.id || "board_operacoes";
+      const initialBoardId = (boardList.find(b => b.id === stored)?.id) || boardList[0].id;
       setCurrentBoardId(initialBoardId);
 
       const [tasksData, colsData] = await Promise.all([
@@ -3397,6 +3409,7 @@ function Dashboard({ currentUser, onLogout }) {
     const tick = async () => {
       if (cancelled) return;
       if (document.hidden) return;
+      if (!currentBoardId) return;
       if (isUserEditing()) return;
       if (hasInFlightMutations()) return;
       const data = await apiCall(`/tasks?boardId=${encodeURIComponent(currentBoardId)}`);
@@ -3866,9 +3879,17 @@ function Dashboard({ currentUser, onLogout }) {
           onToggleFolder={(fid) => setCollapsedFolders(prev => ({ ...prev, [fid]: !prev[fid] }))}
         />
         <div style={{ flex: 1, overflow: "auto", padding: 14 }}>
-          {view === "board" && <BoardView tasks={tasks} setTasks={setTasks} apiUpdateTask={apiUpdateTask} apiUpdateSub={apiUpdateSub} apiAddTask={apiAddTask} apiAddSubitem={apiAddSubitem} search={search} allPeople={allPeople} columns={columns} setColumns={setColumns} apiUpdateColumn={apiUpdateColumn} apiDeleteColumn={apiDeleteColumn} apiReorderColumns={apiReorderColumns} apiReorderTasks={apiReorderTasks} apiReorderSubitems={apiReorderSubitems} setShowAddCol={setShowAddCol} subColumns={subColumns} setSubColumns={setSubColumns} apiUpdateSubColumn={apiUpdateSubColumn} apiDeleteSubColumn={apiDeleteSubColumn} apiReorderSubColumns={apiReorderSubColumns} setShowAddSubCol={setShowAddSubCol} setActiveSubColTaskId={setActiveSubColTaskId} onOpenUpdates={openUpdates} perms={perms} />}
-          {view === "kanban" && <KanbanView tasks={tasks} setTasks={setTasks} apiUpdateTask={apiUpdateTask} search={search} allPeople={allPeople} onOpenUpdates={openUpdates} />}
-          {view === "timeline" && <TimelineView tasks={tasks} search={search} />}
+          {!currentBoardId && dataLoaded ? (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", flexDirection: "column", gap: 16, color: "#778ca3", textAlign: "center", padding: 24 }}>
+              <div style={{ fontSize: 48, opacity: 0.4 }}>🔒</div>
+              <div style={{ fontWeight: 700, fontSize: 18, color: "#c8cdd4" }}>Você não tem acesso a nenhum quadro</div>
+              <div style={{ fontSize: 13, maxWidth: 420, lineHeight: 1.5 }}>Para visualizar um quadro, peça a um administrador para te atribuir como responsável em alguma tarefa. Quando isso acontecer, o quadro aparece automaticamente aqui.</div>
+            </div>
+          ) : (<>
+            {view === "board" && <BoardView tasks={tasks} setTasks={setTasks} apiUpdateTask={apiUpdateTask} apiUpdateSub={apiUpdateSub} apiAddTask={apiAddTask} apiAddSubitem={apiAddSubitem} search={search} allPeople={allPeople} columns={columns} setColumns={setColumns} apiUpdateColumn={apiUpdateColumn} apiDeleteColumn={apiDeleteColumn} apiReorderColumns={apiReorderColumns} apiReorderTasks={apiReorderTasks} apiReorderSubitems={apiReorderSubitems} setShowAddCol={setShowAddCol} subColumns={subColumns} setSubColumns={setSubColumns} apiUpdateSubColumn={apiUpdateSubColumn} apiDeleteSubColumn={apiDeleteSubColumn} apiReorderSubColumns={apiReorderSubColumns} setShowAddSubCol={setShowAddSubCol} setActiveSubColTaskId={setActiveSubColTaskId} onOpenUpdates={openUpdates} perms={perms} />}
+            {view === "kanban" && <KanbanView tasks={tasks} setTasks={setTasks} apiUpdateTask={apiUpdateTask} search={search} allPeople={allPeople} onOpenUpdates={openUpdates} />}
+            {view === "timeline" && <TimelineView tasks={tasks} search={search} />}
+          </>)}
         </div>
         {showAI && (
           <div style={{ width: 320, background: "#1a1d23", borderLeft: "1px solid #2a2d35", overflow: "auto", padding: 12, flexShrink: 0, animation: "slideIn .2s ease" }}>

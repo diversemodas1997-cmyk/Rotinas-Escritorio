@@ -556,8 +556,39 @@ app.delete('/api/folders/:id', auth, adminOnly, (req, res) => {
 });
 
 // ===== Boards =====
+// Returns the set of board IDs the given user is responsible for somewhere
+// (in any task.responsible or subitem.responsible). Admins always see all boards.
+function getAccessibleBoardIds(userName) {
+  const ids = new Set();
+  for (const t of db.prepare('SELECT board_id, responsible FROM tasks').all()) {
+    try {
+      const arr = JSON.parse(t.responsible || '[]');
+      if (Array.isArray(arr) && arr.includes(userName)) ids.add(t.board_id);
+    } catch {}
+  }
+  for (const s of db.prepare(
+    'SELECT t.board_id AS board_id, s.responsible AS responsible FROM subitems s JOIN tasks t ON s.task_id = t.id'
+  ).all()) {
+    try {
+      const arr = JSON.parse(s.responsible || '[]');
+      if (Array.isArray(arr) && arr.includes(userName)) ids.add(s.board_id);
+    } catch {}
+  }
+  return ids;
+}
+
+function userCanAccessBoard(user, boardId) {
+  if (!boardId) return false;
+  if (user.role === 'admin') return true;
+  return getAccessibleBoardIds(user.name).has(boardId);
+}
+
 app.get('/api/boards', auth, (req, res) => {
-  const rows = db.prepare('SELECT * FROM boards ORDER BY sort_order, created_at').all();
+  let rows = db.prepare('SELECT * FROM boards ORDER BY sort_order, created_at').all();
+  if (req.user.role !== 'admin') {
+    const accessible = getAccessibleBoardIds(req.user.name);
+    rows = rows.filter(b => accessible.has(b.id));
+  }
   res.json(rows.map(b => ({ id: b.id, name: b.name, icon: b.icon, color: b.color, sortOrder: b.sort_order, folderId: b.folder_id, createdAt: b.created_at })));
 });
 
@@ -684,6 +715,9 @@ app.put('/api/tasks/reorder',auth,(req,res)=>{const{order}=req.body;if(!Array.is
 app.put('/api/subitems/reorder',auth,(req,res)=>{const{taskId,order}=req.body;if(!taskId||!Array.isArray(order))return res.status(400).json({error:'taskId e order obrigatorios'});const upd=db.prepare('UPDATE subitems SET sort_order=? WHERE id=? AND task_id=?');const tx=db.transaction((ids)=>{ids.forEach((id,i)=>upd.run(i,id,taskId));});tx(order);res.json({success:true});});
 app.get('/api/tasks',auth,(req,res)=>{
   const boardId = req.query.boardId || null;
+  if (boardId && !userCanAccessBoard(req.user, boardId)) {
+    return res.status(403).json({ error: 'Sem acesso a este quadro' });
+  }
   const tasks = boardId
     ? db.prepare('SELECT * FROM tasks WHERE board_id=? ORDER BY sort_order').all(boardId)
     : db.prepare('SELECT * FROM tasks ORDER BY sort_order').all();
@@ -724,6 +758,9 @@ app.delete('/api/updates/:id',auth,(req,res)=>{const u=db.prepare('SELECT author
 
 app.get('/api/columns',auth,(req,res)=>{
   const boardId = req.query.boardId || null;
+  if (boardId && !userCanAccessBoard(req.user, boardId)) {
+    return res.status(403).json({ error: 'Sem acesso a este quadro' });
+  }
   const rows = boardId
     ? db.prepare('SELECT * FROM columns_config WHERE board_id=? ORDER BY sort_order').all(boardId)
     : db.prepare('SELECT * FROM columns_config ORDER BY sort_order').all();
