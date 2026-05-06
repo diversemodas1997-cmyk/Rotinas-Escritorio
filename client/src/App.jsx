@@ -231,7 +231,7 @@ function EditNum({ value, onChange }) {
   if (!e) return <div onClick={() => { setV(String(value || "")); setE(true); }} style={{ cursor: "pointer", padding: "2px 4px", borderRadius: 4, color: value ? "#e8eaed" : "#555", fontSize: 13, minWidth: 24 }} onMouseEnter={e => e.currentTarget.style.background = "rgba(255,255,255,.06)"} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>{value || "—"}</div>;
   return <input ref={r} type="number" value={v} onChange={e => setV(e.target.value)} onBlur={commit} onKeyDown={e => e.key === "Enter" && commit()} style={{ width: 56, padding: "3px 5px", borderRadius: 4, border: "1px solid #6c5ce7", background: "#1a1d23", color: "#e8eaed", fontSize: 12, outline: "none" }} />;
 }
-function EditDate({ value, onChange, isDeadline }) {
+function EditDate({ value, onChange, isDeadline, readOnly }) {
   const [editing, setEditing] = useState(false);
   const [localVal, setLocalVal] = useState(value || "");
   const closingRef = useRef(false);
@@ -253,6 +253,13 @@ function EditDate({ value, onChange, isDeadline }) {
   const handleBlur = () => {
     setTimeout(() => { if (!closingRef.current) setEditing(false); closingRef.current = false; }, 200);
   };
+
+  if (readOnly) return (
+    <div title="Prazo automático: sempre a data de hoje" style={{ padding: "2px 4px", borderRadius: 4, color: value ? color : "#555", fontSize: 12, display: "flex", alignItems: "center", gap: 3, whiteSpace: "nowrap", cursor: "default", opacity: 0.95 }}>
+      {value ? formatDate(value) : "📅"}
+      <span style={{ fontSize: 9, color: "#778ca3" }}>🔒</span>
+    </div>
+  );
 
   if (!editing) return (
     <div onClick={() => setEditing(true)} style={{ cursor: "pointer", padding: "2px 4px", borderRadius: 4, color: value ? color : "#555", fontSize: 12, display: "flex", alignItems: "center", gap: 3, whiteSpace: "nowrap" }}
@@ -358,7 +365,11 @@ function CellRenderer({ col, item, onChange, allPeople, small, subitems, subColu
     case "people": return <PeoplePicker selected={val || []} onChange={v => update(v)} allPeople={allPeople} />;
     case "status": return <StatusBadge status={val || "Não iniciado"} small={small} onClick={() => update(cycleStatus(val || "Não iniciado"))} />;
     case "priority": return <PriorityBadge priority={val || "Média"} onClick={() => update(cyclePriority(val || "Média"))} />;
-    case "date": return <EditDate value={val || null} onChange={v => update(v)} isDeadline={col.isDeadline} />;
+    case "date": {
+      // Parent task's built-in deadline is auto-managed (= today, refreshed daily). Subitems remain editable.
+      const isAutoParentDeadline = col.builtIn && col.field === "deadline" && !small;
+      return <EditDate value={val || null} onChange={v => update(v)} isDeadline={col.isDeadline} readOnly={isAutoParentDeadline} />;
+    }
     case "number": return <EditNum value={val || 0} onChange={v => update(v)} />;
     case "text": return <EditText value={val || ""} onChange={v => update(v)} style={{ color: "#c8ccd4", fontSize: small ? 12 : 13 }} />;
     default: return <span style={{ color: "#555" }}>—</span>;
@@ -1974,8 +1985,8 @@ function GoogleDrivePanel({ onClose, onAttachFile }) {
 
 // ─── ADD TASK MODAL ──────────────────────────────────────────────────────────
 function AddTaskModal({ onClose, onAdd, allPeople }) {
-  const [name, setName] = useState(""); const [priority, setPriority] = useState("Média"); const [deadline, setDeadline] = useState(""); const [responsible, setResponsible] = useState([]);
-  const handleAdd = () => { if (!name.trim()) return; onAdd({ id: "t" + Date.now(), name: name.trim(), responsible: responsible.length > 0 ? responsible : ["Gabriela"], status: "Não iniciado", priority, deadline: deadline || null, totalOrders: 0, totalCancellations: 0, custom: {}, updates: [], subitems: [] }); onClose(); };
+  const [name, setName] = useState(""); const [priority, setPriority] = useState("Média"); const [responsible, setResponsible] = useState([]);
+  const handleAdd = () => { if (!name.trim()) return; onAdd({ id: "t" + Date.now(), name: name.trim(), responsible: responsible.length > 0 ? responsible : ["Gabriela"], status: "Não iniciado", priority, deadline: null, totalOrders: 0, totalCancellations: 0, custom: {}, updates: [], subitems: [] }); onClose(); };
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, backdropFilter: "blur(4px)" }} onClick={onClose}>
       <div style={{ background: "#23262e", borderRadius: 14, padding: 24, width: 420, maxWidth: "92vw", border: "1px solid #333" }} onClick={e => e.stopPropagation()}>
@@ -1987,9 +1998,10 @@ function AddTaskModal({ onClose, onAdd, allPeople }) {
             <PeoplePicker selected={responsible} onChange={setResponsible} allPeople={allPeople} />
           </div>
         </div>
-        <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-          <div style={{ flex: 1 }}><label style={{ fontSize: 11, color: "#778ca3", fontWeight: 600, display: "block", marginBottom: 3 }}>Prioridade</label><select value={priority} onChange={e => setPriority(e.target.value)} style={{ width: "100%", padding: "8px 8px", borderRadius: 7, border: "1px solid #444", background: "#1a1d23", color: "#e8eaed", fontSize: 12 }}>{PRIORITIES.map(p => <option key={p} value={p}>{p}</option>)}</select></div>
-          <div style={{ flex: 1 }}><label style={{ fontSize: 11, color: "#778ca3", fontWeight: 600, display: "block", marginBottom: 3 }}>Prazo</label><input type="date" value={deadline} onChange={e => setDeadline(e.target.value)} style={{ width: "100%", padding: "8px 8px", borderRadius: 7, border: "1px solid #444", background: "#1a1d23", color: "#e8eaed", fontSize: 12, boxSizing: "border-box" }} /></div>
+        <div style={{ marginBottom: 10 }}>
+          <label style={{ fontSize: 11, color: "#778ca3", fontWeight: 600, display: "block", marginBottom: 3 }}>Prioridade</label>
+          <select value={priority} onChange={e => setPriority(e.target.value)} style={{ width: "100%", padding: "8px 8px", borderRadius: 7, border: "1px solid #444", background: "#1a1d23", color: "#e8eaed", fontSize: 12 }}>{PRIORITIES.map(p => <option key={p} value={p}>{p}</option>)}</select>
+          <div style={{ fontSize: 10, color: "#778ca3", marginTop: 6 }}>📅 Prazo será definido automaticamente como a data de hoje.</div>
         </div>
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
           <button onClick={onClose} style={{ padding: "8px 16px", borderRadius: 7, border: "1px solid #444", background: "transparent", color: "#a5b1c2", fontSize: 12, cursor: "pointer" }}>Cancelar</button>

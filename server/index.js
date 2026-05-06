@@ -282,6 +282,8 @@ function runDailyRollover() {
   const row = db.prepare("SELECT value FROM settings WHERE key='last_rollover_date'").get();
   const last = row?.value;
   if (last === today) return;
+  // Parent tasks always reflect "today" as deadline. Subitems are not touched.
+  db.prepare('UPDATE tasks SET deadline=?').run(today);
   // First run ever: just record today, nothing to snapshot.
   if (!last) {
     db.prepare("INSERT OR REPLACE INTO settings (key,value) VALUES ('last_rollover_date',?)").run(today);
@@ -672,15 +674,18 @@ app.get('/api/tasks',auth,(req,res)=>{
   })));
 });
 app.post('/api/tasks',auth,(req,res)=>{
-  const { id, name, status, priority, deadline, responsible, totalOrders, totalCancellations, custom, boardId } = req.body;
+  const { id, name, status, priority, responsible, totalOrders, totalCancellations, custom, boardId } = req.body;
   const board = boardId || 'board_operacoes';
   if (!db.prepare('SELECT id FROM boards WHERE id=?').get(board)) return res.status(400).json({ error: 'Quadro inválido' });
   const m = db.prepare('SELECT MAX(sort_order) as m FROM tasks WHERE board_id=?').get(board).m || 0;
+  // Parent deadline always reflects today; client-provided value is ignored.
   db.prepare('INSERT INTO tasks (id,name,status,priority,deadline,responsible,total_orders,total_cancellations,custom,sort_order,board_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)')
-    .run(id, name, status || 'Não iniciado', priority || 'Média', deadline || null, JSON.stringify(responsible || []), totalOrders || 0, totalCancellations || 0, JSON.stringify(custom || {}), m + 1, board);
+    .run(id, name, status || 'Não iniciado', priority || 'Média', brtDateString(), JSON.stringify(responsible || []), totalOrders || 0, totalCancellations || 0, JSON.stringify(custom || {}), m + 1, board);
   res.json({ success: true });
 });
-app.put('/api/tasks/:id',auth,(req,res)=>{const{name,status,priority,deadline,responsible,totalOrders,totalCancellations,custom}=req.body;const t=db.prepare('SELECT * FROM tasks WHERE id=?').get(req.params.id);if(!t)return res.status(404).json({error:'Não encontrada'});db.prepare('UPDATE tasks SET name=?,status=?,priority=?,deadline=?,responsible=?,total_orders=?,total_cancellations=?,custom=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(name??t.name,status??t.status,priority??t.priority,deadline!==undefined?deadline:t.deadline,responsible?JSON.stringify(responsible):t.responsible,totalOrders??t.total_orders,totalCancellations??t.total_cancellations,custom?JSON.stringify(custom):t.custom,req.params.id);res.json({success:true});});
+app.put('/api/tasks/:id',auth,(req,res)=>{const{name,status,priority,responsible,totalOrders,totalCancellations,custom}=req.body;const t=db.prepare('SELECT * FROM tasks WHERE id=?').get(req.params.id);if(!t)return res.status(404).json({error:'Não encontrada'});
+  // Parent deadline is auto-managed by runDailyRollover; client value is ignored.
+  db.prepare('UPDATE tasks SET name=?,status=?,priority=?,responsible=?,total_orders=?,total_cancellations=?,custom=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(name??t.name,status??t.status,priority??t.priority,responsible?JSON.stringify(responsible):t.responsible,totalOrders??t.total_orders,totalCancellations??t.total_cancellations,custom?JSON.stringify(custom):t.custom,req.params.id);res.json({success:true});});
 app.delete('/api/tasks/:id',auth,adminOnly,(req,res)=>{db.prepare('DELETE FROM tasks WHERE id=?').run(req.params.id);res.json({success:true});});
 
 app.put('/api/subitems/:id',auth,(req,res)=>{const{name,owner,status,responsible,total,deadline,custom}=req.body;const s=db.prepare('SELECT * FROM subitems WHERE id=?').get(req.params.id);if(!s)return res.status(404).json({error:'Não encontrado'});db.prepare('UPDATE subitems SET name=?,owner=?,status=?,responsible=?,total=?,deadline=?,custom=? WHERE id=?').run(name??s.name,owner??s.owner,status??s.status,responsible?JSON.stringify(responsible):s.responsible,total??s.total,deadline!==undefined?deadline:s.deadline,custom?JSON.stringify(custom):s.custom,req.params.id);res.json({success:true});});
