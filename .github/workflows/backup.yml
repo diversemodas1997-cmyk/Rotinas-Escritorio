@@ -1,0 +1,36 @@
+name: Daily DB Backup
+
+on:
+  schedule:
+    # 04:00 UTC = 01:00 BRT (após o rollover de 00:00 BRT no servidor)
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download backup from production
+        env:
+          BACKUP_URL: ${{ secrets.BACKUP_URL }}
+          BACKUP_TOKEN: ${{ secrets.BACKUP_TOKEN }}
+        run: |
+          if [ -z "$BACKUP_URL" ] || [ -z "$BACKUP_TOKEN" ]; then
+            echo "::error::BACKUP_URL e BACKUP_TOKEN precisam estar configurados como Actions secrets"
+            exit 1
+          fi
+          STAMP=$(date -u +"%Y-%m-%d_%H%M")
+          OUT="database.${STAMP}.sqlite"
+          curl --fail --silent --show-error \
+            -H "X-Backup-Token: $BACKUP_TOKEN" \
+            -o "$OUT" \
+            "${BACKUP_URL%/}/api/admin/backup"
+          ls -lh "$OUT"
+          echo "ARTIFACT_NAME=$OUT" >> "$GITHUB_ENV"
+
+      - name: Upload as artifact (90-day retention)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: ${{ env.ARTIFACT_NAME }}
+          retention-days: 90

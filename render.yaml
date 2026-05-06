@@ -19,3 +19,5 @@ services:
         value: /data/database.sqlite
       - key: GEMINI_API_KEY
         sync: false
+      - key: BACKUP_TOKEN
+        sync: false

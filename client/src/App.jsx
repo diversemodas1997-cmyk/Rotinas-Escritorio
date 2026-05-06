@@ -2788,6 +2788,227 @@ function LoginScreen({ onLogin }) {
   );
 }
 
+// ─── BOARDS SIDEBAR ──────────────────────────────────────────────────────────
+function BoardsSidebar({ folders, boards, currentBoardId, onSelectBoard, onNewBoard, onNewFolder, onRenameBoard, onRenameFolder, onDeleteBoard, onDeleteFolder, isAdmin, collapsed, onToggleCollapsed, collapsedFolders, onToggleFolder }) {
+  if (collapsed) {
+    return (
+      <div style={{ width: 38, background: "#1a1d23", borderRight: "1px solid #2a2d35", display: "flex", flexDirection: "column", alignItems: "center", padding: "10px 0", flexShrink: 0 }}>
+        <button onClick={onToggleCollapsed} title="Expandir" style={{ background: "transparent", border: "none", color: "#778ca3", fontSize: 18, cursor: "pointer", padding: 6 }}>☰</button>
+      </div>
+    );
+  }
+  return (
+    <div style={{ width: 220, background: "#1a1d23", borderRight: "1px solid #2a2d35", display: "flex", flexDirection: "column", flexShrink: 0, overflow: "hidden" }}>
+      <div style={{ padding: "10px 12px", borderBottom: "1px solid #2a2d35", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 }}>
+        <span style={{ fontWeight: 700, fontSize: 12, textTransform: "uppercase", letterSpacing: 0.5, color: "#e8eaed" }}>Quadros</span>
+        <button onClick={onToggleCollapsed} title="Recolher" style={{ background: "transparent", border: "none", color: "#778ca3", fontSize: 14, cursor: "pointer", padding: 2 }}>«</button>
+      </div>
+      <div style={{ flex: 1, overflow: "auto", padding: "6px 0" }}>
+        {folders.map(folder => {
+          const folderBoards = boards.filter(b => b.folderId === folder.id);
+          const isOpen = !collapsedFolders[folder.id];
+          return (
+            <div key={folder.id} style={{ marginBottom: 2 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", cursor: "pointer", color: "#c8cdd4", fontSize: 12, fontWeight: 700, userSelect: "none", group: "folder" }}
+                onClick={() => onToggleFolder(folder.id)}>
+                <span style={{ fontSize: 9, color: "#778ca3", width: 8, display: "inline-block", transform: isOpen ? "rotate(90deg)" : "none", transition: "transform .15s" }}>▶</span>
+                <span style={{ fontSize: 13 }}>{folder.icon}</span>
+                <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{folder.name}</span>
+                {isAdmin && (
+                  <span style={{ display: "flex", gap: 2, opacity: 0.7 }} onClick={e => e.stopPropagation()}>
+                    <button title="Novo quadro nesta pasta" onClick={() => onNewBoard(folder.id)} style={{ background: "transparent", border: "none", color: "#6c5ce7", cursor: "pointer", fontSize: 13, padding: 0, lineHeight: 1 }}>+</button>
+                    <button title="Renomear pasta" onClick={() => onRenameFolder(folder)} style={{ background: "transparent", border: "none", color: "#778ca3", cursor: "pointer", fontSize: 11, padding: 0, lineHeight: 1 }}>✎</button>
+                    <button title="Excluir pasta" onClick={() => onDeleteFolder(folder)} style={{ background: "transparent", border: "none", color: "#e2445c", cursor: "pointer", fontSize: 11, padding: 0, lineHeight: 1 }}>🗑</button>
+                  </span>
+                )}
+              </div>
+              {isOpen && (
+                <div>
+                  {folderBoards.length === 0 && (
+                    <div style={{ padding: "4px 10px 4px 30px", fontSize: 11, color: "#556" }}>— vazia —</div>
+                  )}
+                  {folderBoards.map(b => {
+                    const active = b.id === currentBoardId;
+                    return (
+                      <div key={b.id} onClick={() => onSelectBoard(b.id)} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 10px 5px 28px", cursor: "pointer", background: active ? "rgba(108,92,231,.15)" : "transparent", borderLeft: active ? "3px solid #6c5ce7" : "3px solid transparent", color: active ? "#fff" : "#c8cdd4", fontSize: 12 }}
+                        onMouseEnter={e => { if (!active) e.currentTarget.style.background = "rgba(255,255,255,.03)"; }}
+                        onMouseLeave={e => { if (!active) e.currentTarget.style.background = "transparent"; }}>
+                        <span style={{ fontSize: 12 }}>{b.icon}</span>
+                        <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{b.name}</span>
+                        {isAdmin && (
+                          <span style={{ display: "flex", gap: 2, opacity: 0.5 }} onClick={e => e.stopPropagation()}>
+                            <button title="Renomear" onClick={() => onRenameBoard(b)} style={{ background: "transparent", border: "none", color: "#778ca3", cursor: "pointer", fontSize: 10, padding: 0, lineHeight: 1 }}>✎</button>
+                            <button title="Excluir" onClick={() => onDeleteBoard(b)} style={{ background: "transparent", border: "none", color: "#e2445c", cursor: "pointer", fontSize: 10, padding: 0, lineHeight: 1 }}>🗑</button>
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {isAdmin && (
+        <div style={{ padding: 8, borderTop: "1px solid #2a2d35", display: "flex", gap: 6, flexShrink: 0 }}>
+          <button onClick={() => onNewBoard(null)} style={{ flex: 1, background: "#6c5ce7", color: "#fff", border: "none", borderRadius: 6, padding: "6px 8px", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>+ Quadro</button>
+          <button onClick={onNewFolder} title="Nova pasta" style={{ background: "transparent", color: "#c8cdd4", border: "1px solid #2a2d35", borderRadius: 6, padding: "6px 8px", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>📁+</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── NEW BOARD MODAL ─────────────────────────────────────────────────────────
+function NewBoardModal({ folders, boards, defaultFolderId, onClose, onCreate }) {
+  const [name, setName] = useState("");
+  const [icon, setIcon] = useState("📋");
+  const [folderId, setFolderId] = useState(defaultFolderId || folders[0]?.id || "");
+  const [mode, setMode] = useState("blank"); // 'blank' | 'copy'
+  const [copyFromId, setCopyFromId] = useState(boards[0]?.id || "");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const submit = async () => {
+    if (!name.trim()) { setErr("Informe um nome"); return; }
+    if (!folderId) { setErr("Escolha uma pasta"); return; }
+    setBusy(true); setErr("");
+    const payload = { name: name.trim(), icon, folderId };
+    if (mode === "copy") payload.copyFromId = copyFromId;
+    const res = await onCreate(payload);
+    setBusy(false);
+    if (res?.error) { setErr(res.error); return; }
+    onClose();
+  };
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#1a1d23", borderRadius: 12, padding: 22, width: 460, maxWidth: "92vw", border: "1px solid #2a2d35" }}>
+        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 16, color: "#e8eaed" }}>Novo quadro</div>
+
+        <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
+          <div style={{ flex: 1 }}>
+            <label style={{ fontSize: 11, color: "#778ca3", fontWeight: 600 }}>Nome</label>
+            <input autoFocus value={name} onChange={e => setName(e.target.value)} placeholder="Ex: Vendas, RH..." style={{ width: "100%", marginTop: 4, padding: "8px 10px", borderRadius: 6, border: "1px solid #2a2d35", background: "#13151a", color: "#e8eaed", fontSize: 13, outline: "none" }} />
+          </div>
+          <div style={{ width: 70 }}>
+            <label style={{ fontSize: 11, color: "#778ca3", fontWeight: 600 }}>Ícone</label>
+            <input value={icon} onChange={e => setIcon(e.target.value.slice(0, 2))} style={{ width: "100%", marginTop: 4, padding: "8px 10px", borderRadius: 6, border: "1px solid #2a2d35", background: "#13151a", color: "#e8eaed", fontSize: 16, outline: "none", textAlign: "center" }} />
+          </div>
+        </div>
+
+        <div style={{ marginBottom: 14 }}>
+          <label style={{ fontSize: 11, color: "#778ca3", fontWeight: 600 }}>Pasta</label>
+          <select value={folderId} onChange={e => setFolderId(e.target.value)} style={{ width: "100%", marginTop: 4, padding: "8px 10px", borderRadius: 6, border: "1px solid #2a2d35", background: "#13151a", color: "#e8eaed", fontSize: 13, outline: "none" }}>
+            {folders.map(f => <option key={f.id} value={f.id}>{f.icon} {f.name}</option>)}
+          </select>
+        </div>
+
+        <div style={{ marginBottom: 14 }}>
+          <label style={{ fontSize: 11, color: "#778ca3", fontWeight: 600, display: "block", marginBottom: 6 }}>Modelo</label>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={() => setMode("blank")} style={{ flex: 1, padding: "10px 8px", border: mode === "blank" ? "2px solid #6c5ce7" : "1px solid #2a2d35", borderRadius: 6, background: mode === "blank" ? "rgba(108,92,231,.1)" : "#13151a", color: "#e8eaed", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>📄 Em branco</button>
+            <button onClick={() => setMode("copy")} disabled={boards.length === 0} style={{ flex: 1, padding: "10px 8px", border: mode === "copy" ? "2px solid #6c5ce7" : "1px solid #2a2d35", borderRadius: 6, background: mode === "copy" ? "rgba(108,92,231,.1)" : "#13151a", color: boards.length === 0 ? "#444" : "#e8eaed", fontSize: 12, fontWeight: 600, cursor: boards.length === 0 ? "not-allowed" : "pointer" }}>📋 Copiar de…</button>
+          </div>
+        </div>
+
+        {mode === "copy" && (
+          <div style={{ marginBottom: 14 }}>
+            <label style={{ fontSize: 11, color: "#778ca3", fontWeight: 600 }}>Copiar estrutura de</label>
+            <select value={copyFromId} onChange={e => setCopyFromId(e.target.value)} style={{ width: "100%", marginTop: 4, padding: "8px 10px", borderRadius: 6, border: "1px solid #2a2d35", background: "#13151a", color: "#e8eaed", fontSize: 13, outline: "none" }}>
+              {boards.map(b => <option key={b.id} value={b.id}>{b.icon} {b.name}</option>)}
+            </select>
+            <div style={{ fontSize: 10, color: "#778ca3", marginTop: 4 }}>Apenas colunas serão copiadas. Tarefas e relatórios não.</div>
+          </div>
+        )}
+
+        {err && <div style={{ color: "#e2445c", fontSize: 11, marginBottom: 8 }}>{err}</div>}
+
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          <button onClick={onClose} disabled={busy} style={{ background: "transparent", color: "#c8cdd4", border: "1px solid #2a2d35", borderRadius: 6, padding: "8px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Cancelar</button>
+          <button onClick={submit} disabled={busy} style={{ background: "#6c5ce7", color: "#fff", border: "none", borderRadius: 6, padding: "8px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer", opacity: busy ? 0.6 : 1 }}>{busy ? "Criando..." : "Criar"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── NEW FOLDER MODAL ────────────────────────────────────────────────────────
+function NewFolderModal({ onClose, onCreate, target }) {
+  const editing = !!target;
+  const [name, setName] = useState(target?.name || "");
+  const [icon, setIcon] = useState(target?.icon || "📁");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const submit = async () => {
+    if (!name.trim()) { setErr("Informe um nome"); return; }
+    setBusy(true); setErr("");
+    const res = await onCreate({ name: name.trim(), icon });
+    setBusy(false);
+    if (res?.error) { setErr(res.error); return; }
+    onClose();
+  };
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#1a1d23", borderRadius: 12, padding: 22, width: 380, maxWidth: "92vw", border: "1px solid #2a2d35" }}>
+        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 16, color: "#e8eaed" }}>{editing ? "Renomear pasta" : "Nova pasta"}</div>
+        <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
+          <div style={{ flex: 1 }}>
+            <label style={{ fontSize: 11, color: "#778ca3", fontWeight: 600 }}>Nome</label>
+            <input autoFocus value={name} onChange={e => setName(e.target.value)} placeholder="Ex: Marketing" style={{ width: "100%", marginTop: 4, padding: "8px 10px", borderRadius: 6, border: "1px solid #2a2d35", background: "#13151a", color: "#e8eaed", fontSize: 13, outline: "none" }} />
+          </div>
+          <div style={{ width: 70 }}>
+            <label style={{ fontSize: 11, color: "#778ca3", fontWeight: 600 }}>Ícone</label>
+            <input value={icon} onChange={e => setIcon(e.target.value.slice(0, 2))} style={{ width: "100%", marginTop: 4, padding: "8px 10px", borderRadius: 6, border: "1px solid #2a2d35", background: "#13151a", color: "#e8eaed", fontSize: 16, outline: "none", textAlign: "center" }} />
+          </div>
+        </div>
+        {err && <div style={{ color: "#e2445c", fontSize: 11, marginBottom: 8 }}>{err}</div>}
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          <button onClick={onClose} disabled={busy} style={{ background: "transparent", color: "#c8cdd4", border: "1px solid #2a2d35", borderRadius: 6, padding: "8px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Cancelar</button>
+          <button onClick={submit} disabled={busy} style={{ background: "#6c5ce7", color: "#fff", border: "none", borderRadius: 6, padding: "8px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer", opacity: busy ? 0.6 : 1 }}>{busy ? "Salvando..." : (editing ? "Salvar" : "Criar")}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── RENAME BOARD MODAL ──────────────────────────────────────────────────────
+function RenameBoardModal({ target, onClose, onSave }) {
+  const [name, setName] = useState(target.name);
+  const [icon, setIcon] = useState(target.icon);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const submit = async () => {
+    if (!name.trim()) { setErr("Informe um nome"); return; }
+    setBusy(true); setErr("");
+    const res = await onSave({ name: name.trim(), icon });
+    setBusy(false);
+    if (res?.error) { setErr(res.error); return; }
+    onClose();
+  };
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#1a1d23", borderRadius: 12, padding: 22, width: 380, maxWidth: "92vw", border: "1px solid #2a2d35" }}>
+        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 16, color: "#e8eaed" }}>Renomear quadro</div>
+        <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
+          <div style={{ flex: 1 }}>
+            <label style={{ fontSize: 11, color: "#778ca3", fontWeight: 600 }}>Nome</label>
+            <input autoFocus value={name} onChange={e => setName(e.target.value)} style={{ width: "100%", marginTop: 4, padding: "8px 10px", borderRadius: 6, border: "1px solid #2a2d35", background: "#13151a", color: "#e8eaed", fontSize: 13, outline: "none" }} />
+          </div>
+          <div style={{ width: 70 }}>
+            <label style={{ fontSize: 11, color: "#778ca3", fontWeight: 600 }}>Ícone</label>
+            <input value={icon} onChange={e => setIcon(e.target.value.slice(0, 2))} style={{ width: "100%", marginTop: 4, padding: "8px 10px", borderRadius: 6, border: "1px solid #2a2d35", background: "#13151a", color: "#e8eaed", fontSize: 16, outline: "none", textAlign: "center" }} />
+          </div>
+        </div>
+        {err && <div style={{ color: "#e2445c", fontSize: 11, marginBottom: 8 }}>{err}</div>}
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          <button onClick={onClose} disabled={busy} style={{ background: "transparent", color: "#c8cdd4", border: "1px solid #2a2d35", borderRadius: 6, padding: "8px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Cancelar</button>
+          <button onClick={submit} disabled={busy} style={{ background: "#6c5ce7", color: "#fff", border: "none", borderRadius: 6, padding: "8px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer", opacity: busy ? 0.6 : 1 }}>{busy ? "Salvando..." : "Salvar"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── MAIN APP ────────────────────────────────────────────────────────────────
 function Dashboard({ currentUser, onLogout }) {
   const [tasks, setTasks] = useState([]);
@@ -2811,21 +3032,48 @@ function Dashboard({ currentUser, onLogout }) {
   const [showProfile, setShowProfile] = useState(false);
   const [users, setUsers] = useState([]);
   const [dataLoaded, setDataLoaded] = useState(false);
+  // Multi-board / folders
+  const [folders, setFolders] = useState([]);
+  const [boards, setBoards] = useState([]);
+  const [currentBoardId, setCurrentBoardId] = useState(() => localStorage.getItem("rotina_board") || "board_operacoes");
+  const [collapsedFolders, setCollapsedFolders] = useState({});
+  const [showNewBoard, setShowNewBoard] = useState(false);
+  const [newBoardFolderId, setNewBoardFolderId] = useState(null);
+  const [showNewFolder, setShowNewFolder] = useState(false);
+  const [renameBoardTarget, setRenameBoardTarget] = useState(null);
+  const [renameFolderTarget, setRenameFolderTarget] = useState(null);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("rotina_sidebar_collapsed") === "1");
   const notifRef = useRef(null);
   const userMenuRef = useRef(null);
   useClickOutside(notifRef, () => setShowNotifs(false));
   useClickOutside(userMenuRef, () => setShowUserMenu(false));
 
+  const normalizeTasks = (data) => data.map(t => ({ ...t, custom: t.custom || {}, updates: t.updates || [], subitems: (t.subitems || []).map(s => ({ ...s, custom: s.custom || {}, updates: s.updates || [], cancellations: s.cancellations || 0 })) }));
+
   // ─── LOAD ALL DATA FROM API ON MOUNT ───────────────────────────────────────
   useEffect(() => {
     let mounted = true;
     async function loadData() {
-      const [tasksData, colsData, usersData, autoData] = await Promise.all([
-        apiCall("/tasks"), apiCall("/columns"), apiCall("/users"), apiCall("/automations"),
+      const [foldersData, boardsData, usersData, autoData] = await Promise.all([
+        apiCall("/folders"), apiCall("/boards"), apiCall("/users"), apiCall("/automations"),
       ]);
       if (!mounted) return;
-      if (tasksData) setTasks(tasksData.map(t => ({ ...t, custom: t.custom || {}, updates: t.updates || [], subitems: (t.subitems || []).map(s => ({ ...s, custom: s.custom || {}, updates: s.updates || [], cancellations: s.cancellations || 0 })) })));
-      else setTasks(INITIAL_TASKS); // fallback
+      const folderList = foldersData || [];
+      const boardList = boardsData || [];
+      setFolders(folderList);
+      setBoards(boardList);
+      // Resolve active board: stored choice if it still exists, else first board, else default.
+      const stored = localStorage.getItem("rotina_board");
+      const initialBoardId = (boardList.find(b => b.id === stored)?.id) || boardList[0]?.id || "board_operacoes";
+      setCurrentBoardId(initialBoardId);
+
+      const [tasksData, colsData] = await Promise.all([
+        apiCall(`/tasks?boardId=${encodeURIComponent(initialBoardId)}`),
+        apiCall(`/columns?boardId=${encodeURIComponent(initialBoardId)}`),
+      ]);
+      if (!mounted) return;
+      if (tasksData) setTasks(normalizeTasks(tasksData));
+      else setTasks([]);
       if (colsData) {
         setColumns(colsData.filter(c => (c.scope || 'task') === 'task'));
         setSubColumns(colsData.filter(c => c.scope === 'subitem'));
@@ -2840,11 +3088,28 @@ function Dashboard({ currentUser, onLogout }) {
     return () => { mounted = false; };
   }, []);
 
+  // ─── SWITCH BOARD: refetch tasks/columns scoped to the new board ──────────
+  const switchBoard = async (boardId) => {
+    if (!boardId || boardId === currentBoardId) return;
+    setCurrentBoardId(boardId);
+    localStorage.setItem("rotina_board", boardId);
+    const [tasksData, colsData] = await Promise.all([
+      apiCall(`/tasks?boardId=${encodeURIComponent(boardId)}`),
+      apiCall(`/columns?boardId=${encodeURIComponent(boardId)}`),
+    ]);
+    if (tasksData) setTasks(normalizeTasks(tasksData)); else setTasks([]);
+    if (colsData) {
+      setColumns(colsData.filter(c => (c.scope || 'task') === 'task'));
+      setSubColumns(colsData.filter(c => c.scope === 'subitem'));
+    } else {
+      setColumns([]); setSubColumns([]);
+    }
+  };
+
   // ─── POLLING: sincronização automática entre clientes ─────────────────────
   useEffect(() => {
     if (!dataLoaded) return;
     const POLL_MS = 4000;
-    const normalizeTasks = (data) => data.map(t => ({ ...t, custom: t.custom || {}, updates: t.updates || [], subitems: (t.subitems || []).map(s => ({ ...s, custom: s.custom || {}, updates: s.updates || [], cancellations: s.cancellations || 0 })) }));
     let cancelled = false;
     const isUserEditing = () => {
       const ae = document.activeElement;
@@ -2857,14 +3122,14 @@ function Dashboard({ currentUser, onLogout }) {
       if (document.hidden) return;
       if (isUserEditing()) return;
       if (hasInFlightMutations()) return;
-      const data = await apiCall("/tasks");
+      const data = await apiCall(`/tasks?boardId=${encodeURIComponent(currentBoardId)}`);
       if (cancelled || !data) return;
       if (isUserEditing() || hasInFlightMutations()) return;
       setTasks(normalizeTasks(data));
     };
     const id = setInterval(tick, POLL_MS);
     return () => { cancelled = true; clearInterval(id); };
-  }, [dataLoaded]);
+  }, [dataLoaded, currentBoardId]);
 
   // ─── API-BACKED SETTERS ────────────────────────────────────────────────────
   const apiUpdateTask = (tid, newTask) => {
@@ -2881,8 +3146,9 @@ function Dashboard({ currentUser, onLogout }) {
   };
 
   const apiAddTask = (task) => {
-    setTasks(prev => [...prev, task]);
-    apiCall("/tasks", { method: "POST", body: JSON.stringify(task) });
+    const taskWithBoard = { ...task, boardId: currentBoardId };
+    setTasks(prev => [...prev, taskWithBoard]);
+    apiCall("/tasks", { method: "POST", body: JSON.stringify(taskWithBoard) });
   };
 
   const apiAddSubitem = (taskId, sub) => {
@@ -2891,8 +3157,9 @@ function Dashboard({ currentUser, onLogout }) {
   };
 
   const apiAddColumn = (col) => {
-    setColumns(prev => [...prev, col]);
-    apiCall("/columns", { method: "POST", body: JSON.stringify(col) });
+    const colWithBoard = { ...col, boardId: currentBoardId };
+    setColumns(prev => [...prev, colWithBoard]);
+    apiCall("/columns", { method: "POST", body: JSON.stringify(colWithBoard) });
   };
 
   const apiUpdateColumn = (colId, patch) => {
@@ -2929,7 +3196,7 @@ function Dashboard({ currentUser, onLogout }) {
   };
 
   const apiAddSubColumn = (col) => {
-    const withScope = { ...col, scope: "subitem", taskId: col.taskId || activeSubColTaskId || null };
+    const withScope = { ...col, scope: "subitem", taskId: col.taskId || activeSubColTaskId || null, boardId: currentBoardId };
     setSubColumns(prev => [...prev, withScope]);
     apiCall("/columns", { method: "POST", body: JSON.stringify(withScope) });
   };
@@ -2945,6 +3212,61 @@ function Dashboard({ currentUser, onLogout }) {
   const apiUpdateAutomation = (aid, active) => {
     setAutomations(prev => prev.map(a => a.id === aid ? { ...a, active } : a));
     apiCall(`/automations/${aid}`, { method: "PUT", body: JSON.stringify({ active }) });
+  };
+
+  // ─── BOARDS & FOLDERS ─────────────────────────────────────────────────────
+  const apiCreateBoard = async (payload) => {
+    const res = await apiCall("/boards", { method: "POST", body: JSON.stringify(payload) });
+    if (!res || res.error) return { error: res?.error || "Erro ao criar quadro" };
+    setBoards(prev => [...prev, res]);
+    // Auto-switch to the freshly created board.
+    await switchBoard(res.id);
+    return { board: res };
+  };
+  const apiUpdateBoard = async (id, patch) => {
+    const res = await apiCall(`/boards/${id}`, { method: "PUT", body: JSON.stringify(patch) });
+    if (!res || res.error) return { error: res?.error || "Erro" };
+    setBoards(prev => prev.map(b => b.id === id ? res : b));
+    return { board: res };
+  };
+  const apiDeleteBoard = async (id) => {
+    const res = await apiCall(`/boards/${id}`, { method: "DELETE" });
+    if (!res || res.error) return { error: res?.error || "Erro" };
+    setBoards(prev => {
+      const next = prev.filter(b => b.id !== id);
+      // If we deleted the active board, jump to the first remaining one.
+      if (currentBoardId === id && next.length > 0) {
+        setTimeout(() => switchBoard(next[0].id), 0);
+      }
+      return next;
+    });
+    return { success: true };
+  };
+  const apiCreateFolder = async (payload) => {
+    const res = await apiCall("/folders", { method: "POST", body: JSON.stringify(payload) });
+    if (!res || res.error) return { error: res?.error || "Erro ao criar pasta" };
+    setFolders(prev => [...prev, res]);
+    return { folder: res };
+  };
+  const apiUpdateFolder = async (id, patch) => {
+    const res = await apiCall(`/folders/${id}`, { method: "PUT", body: JSON.stringify(patch) });
+    if (!res || res.error) return { error: res?.error || "Erro" };
+    setFolders(prev => prev.map(f => f.id === id ? res : f));
+    return { folder: res };
+  };
+  const apiDeleteFolder = async (id) => {
+    const res = await apiCall(`/folders/${id}`, { method: "DELETE" });
+    if (!res || res.error) return { error: res?.error || "Erro" };
+    setFolders(prev => prev.filter(f => f.id !== id));
+    return { success: true };
+  };
+  const handleDeleteBoard = (board) => {
+    if (!window.confirm(`Excluir o quadro "${board.name}"? Todas as tarefas e colunas dele serão removidas.`)) return;
+    apiDeleteBoard(board.id).then(r => { if (r.error) alert(r.error); });
+  };
+  const handleDeleteFolder = (folder) => {
+    if (!window.confirm(`Excluir a pasta "${folder.name}"?`)) return;
+    apiDeleteFolder(folder.id).then(r => { if (r.error) alert(r.error); });
   };
 
   const apiUpdateUserRole = (userName, newRole) => {
@@ -3170,6 +3492,23 @@ function Dashboard({ currentUser, onLogout }) {
 
       {/* CONTENT */}
       <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
+        <BoardsSidebar
+          folders={folders}
+          boards={boards}
+          currentBoardId={currentBoardId}
+          onSelectBoard={switchBoard}
+          onNewBoard={(folderId) => { setNewBoardFolderId(folderId); setShowNewBoard(true); }}
+          onNewFolder={() => setShowNewFolder(true)}
+          onRenameBoard={(b) => setRenameBoardTarget(b)}
+          onRenameFolder={(f) => setRenameFolderTarget(f)}
+          onDeleteBoard={handleDeleteBoard}
+          onDeleteFolder={handleDeleteFolder}
+          isAdmin={isAdmin}
+          collapsed={sidebarCollapsed}
+          onToggleCollapsed={() => { const next = !sidebarCollapsed; setSidebarCollapsed(next); localStorage.setItem("rotina_sidebar_collapsed", next ? "1" : "0"); }}
+          collapsedFolders={collapsedFolders}
+          onToggleFolder={(fid) => setCollapsedFolders(prev => ({ ...prev, [fid]: !prev[fid] }))}
+        />
         <div style={{ flex: 1, overflow: "auto", padding: 14 }}>
           {view === "board" && <BoardView tasks={tasks} setTasks={setTasks} apiUpdateTask={apiUpdateTask} apiUpdateSub={apiUpdateSub} apiAddTask={apiAddTask} apiAddSubitem={apiAddSubitem} search={search} allPeople={allPeople} columns={columns} setColumns={setColumns} apiUpdateColumn={apiUpdateColumn} apiDeleteColumn={apiDeleteColumn} apiReorderColumns={apiReorderColumns} apiReorderTasks={apiReorderTasks} apiReorderSubitems={apiReorderSubitems} setShowAddCol={setShowAddCol} subColumns={subColumns} setSubColumns={setSubColumns} apiUpdateSubColumn={apiUpdateSubColumn} apiDeleteSubColumn={apiDeleteSubColumn} apiReorderSubColumns={apiReorderSubColumns} setShowAddSubCol={setShowAddSubCol} setActiveSubColTaskId={setActiveSubColTaskId} onOpenUpdates={openUpdates} perms={perms} />}
           {view === "kanban" && <KanbanView tasks={tasks} setTasks={setTasks} apiUpdateTask={apiUpdateTask} search={search} allPeople={allPeople} onOpenUpdates={openUpdates} />}
@@ -3184,14 +3523,43 @@ function Dashboard({ currentUser, onLogout }) {
               const changed = next.find((a, i) => automations[i] && a.active !== automations[i].active && a.id === automations[i].id);
               if (changed) apiUpdateAutomation(changed.id, changed.active);
             }} canManageAutomations={perms.manageAutomations} onDataChanged={async () => {
-              const [tasksData, autoData] = await Promise.all([apiCall("/tasks"), apiCall("/automations")]);
-              if (tasksData) setTasks(tasksData.map(t => ({ ...t, custom: t.custom || {}, updates: t.updates || [], subitems: (t.subitems || []).map(s => ({ ...s, custom: s.custom || {}, updates: s.updates || [], cancellations: s.cancellations || 0 })) })));
+              const [tasksData, autoData] = await Promise.all([apiCall(`/tasks?boardId=${encodeURIComponent(currentBoardId)}`), apiCall("/automations")]);
+              if (tasksData) setTasks(normalizeTasks(tasksData));
               if (autoData) setAutomations(autoData);
             }} />
           </div>
         )}
       </div>
 
+      {showNewBoard && (
+        <NewBoardModal
+          folders={folders}
+          boards={boards}
+          defaultFolderId={newBoardFolderId}
+          onClose={() => { setShowNewBoard(false); setNewBoardFolderId(null); }}
+          onCreate={apiCreateBoard}
+        />
+      )}
+      {showNewFolder && (
+        <NewFolderModal
+          onClose={() => setShowNewFolder(false)}
+          onCreate={apiCreateFolder}
+        />
+      )}
+      {renameFolderTarget && (
+        <NewFolderModal
+          target={renameFolderTarget}
+          onClose={() => setRenameFolderTarget(null)}
+          onCreate={(payload) => apiUpdateFolder(renameFolderTarget.id, payload)}
+        />
+      )}
+      {renameBoardTarget && (
+        <RenameBoardModal
+          target={renameBoardTarget}
+          onClose={() => setRenameBoardTarget(null)}
+          onSave={(payload) => apiUpdateBoard(renameBoardTarget.id, payload)}
+        />
+      )}
       {showAddTask && <AddTaskModal onClose={() => setShowAddTask(false)} onAdd={apiAddTask} allPeople={allPeople} />}
       {showAddCol && perms.addColumns && <AddColumnModal onClose={() => setShowAddCol(false)} onAdd={apiAddColumn} columns={columns} />}
       {showAddSubCol && perms.addColumns && <AddColumnModal onClose={() => setShowAddSubCol(false)} onAdd={apiAddSubColumn} columns={columns} title="Adicionar Coluna de Subitem" linkParent />}
