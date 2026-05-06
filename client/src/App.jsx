@@ -1050,7 +1050,7 @@ function InlineAddRow({ placeholder, onAdd, gridCols, cellBorder, cellStyle, acc
 }
 
 // ─── BOARD VIEW (Monday.com style) ───────────────────────────────────────────
-function BoardView({ tasks, setTasks, apiUpdateTask, apiUpdateSub, apiAddTask, apiAddSubitem, search, allPeople, columns, setColumns, apiUpdateColumn, apiDeleteColumn, apiReorderColumns, apiReorderTasks, apiReorderSubitems, setShowAddCol, subColumns, setSubColumns, apiUpdateSubColumn, apiDeleteSubColumn, apiReorderSubColumns, setShowAddSubCol, setActiveSubColTaskId, onOpenUpdates, perms = {} }) {
+function BoardView({ tasks, setTasks, apiUpdateTask, apiUpdateSub, apiAddTask, apiDeleteTask, apiAddSubitem, search, allPeople, columns, setColumns, apiUpdateColumn, apiDeleteColumn, apiReorderColumns, apiReorderTasks, apiReorderSubitems, setShowAddCol, subColumns, setSubColumns, apiUpdateSubColumn, apiDeleteSubColumn, apiReorderSubColumns, setShowAddSubCol, setActiveSubColTaskId, onOpenUpdates, perms = {} }) {
   const [expanded, setExpanded] = useState({});
   const [selected, setSelected] = useState({});
   const [groupOpen, setGroupOpen] = useState(true);
@@ -1186,6 +1186,20 @@ function BoardView({ tasks, setTasks, apiUpdateTask, apiUpdateSub, apiAddTask, a
                     <EditText value={task.name} onChange={v => upTask(task.id, { ...task, name: v })} style={{ fontWeight: 600, color: "#e8eaed", fontSize: 13.5 }} />
                     {subCount > 0 && (
                       <span style={{ background: "#333", color: "#9ca6b5", fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 8, flexShrink: 0 }}>{subCount}</span>
+                    )}
+                    {perms.deleteTasks && apiDeleteTask && (
+                      <button
+                        title={`Excluir tarefa "${task.name}"`}
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          if (!window.confirm(`Excluir a tarefa "${task.name}"? Todos os subitens, relatórios e dados associados serão removidos. Esta ação não pode ser desfeita.`)) return;
+                          const r = await apiDeleteTask(task.id);
+                          if (r?.error) alert(r.error);
+                        }}
+                        style={{ marginLeft: "auto", background: "transparent", border: "none", color: "#444", cursor: "pointer", fontSize: 13, padding: "2px 6px", borderRadius: 4, opacity: 0.6, transition: "all .15s" }}
+                        onMouseEnter={(e) => { e.currentTarget.style.color = "#e2445c"; e.currentTarget.style.opacity = 1; e.currentTarget.style.background = "rgba(226,68,92,.08)"; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.color = "#444"; e.currentTarget.style.opacity = 0.6; e.currentTarget.style.background = "transparent"; }}
+                      >🗑</button>
                     )}
                   </div>
 
@@ -3480,6 +3494,18 @@ function Dashboard({ currentUser, onLogout }) {
     apiCall("/tasks", { method: "POST", body: JSON.stringify(taskWithBoard) });
   };
 
+  const apiDeleteTask = async (taskId) => {
+    setTasks(prev => prev.filter(t => t.id !== taskId));
+    const res = await apiCall(`/tasks/${taskId}`, { method: "DELETE", returnError: true });
+    if (res?.error) {
+      // Rollback on failure: refetch board tasks so the user doesn't see a phantom delete.
+      const fresh = await apiCall(`/tasks?boardId=${encodeURIComponent(currentBoardId)}`);
+      if (fresh) setTasks(normalizeTasks(fresh));
+      return { error: res.error };
+    }
+    return { success: true };
+  };
+
   const apiAddSubitem = (taskId, sub) => {
     setTasks(prev => prev.map(t => t.id === taskId ? { ...t, subitems: [...t.subitems, sub] } : t));
     apiCall("/subitems", { method: "POST", body: JSON.stringify({ ...sub, task_id: taskId }) });
@@ -3925,7 +3951,7 @@ function Dashboard({ currentUser, onLogout }) {
               <div style={{ fontSize: 13, maxWidth: 420, lineHeight: 1.5 }}>Para visualizar um quadro, peça a um administrador para te atribuir como responsável em alguma tarefa. Quando isso acontecer, o quadro aparece automaticamente aqui.</div>
             </div>
           ) : (<>
-            {view === "board" && <BoardView tasks={tasks} setTasks={setTasks} apiUpdateTask={apiUpdateTask} apiUpdateSub={apiUpdateSub} apiAddTask={apiAddTask} apiAddSubitem={apiAddSubitem} search={search} allPeople={allPeople} columns={columns} setColumns={setColumns} apiUpdateColumn={apiUpdateColumn} apiDeleteColumn={apiDeleteColumn} apiReorderColumns={apiReorderColumns} apiReorderTasks={apiReorderTasks} apiReorderSubitems={apiReorderSubitems} setShowAddCol={setShowAddCol} subColumns={subColumns} setSubColumns={setSubColumns} apiUpdateSubColumn={apiUpdateSubColumn} apiDeleteSubColumn={apiDeleteSubColumn} apiReorderSubColumns={apiReorderSubColumns} setShowAddSubCol={setShowAddSubCol} setActiveSubColTaskId={setActiveSubColTaskId} onOpenUpdates={openUpdates} perms={perms} />}
+            {view === "board" && <BoardView tasks={tasks} setTasks={setTasks} apiUpdateTask={apiUpdateTask} apiUpdateSub={apiUpdateSub} apiAddTask={apiAddTask} apiDeleteTask={apiDeleteTask} apiAddSubitem={apiAddSubitem} search={search} allPeople={allPeople} columns={columns} setColumns={setColumns} apiUpdateColumn={apiUpdateColumn} apiDeleteColumn={apiDeleteColumn} apiReorderColumns={apiReorderColumns} apiReorderTasks={apiReorderTasks} apiReorderSubitems={apiReorderSubitems} setShowAddCol={setShowAddCol} subColumns={subColumns} setSubColumns={setSubColumns} apiUpdateSubColumn={apiUpdateSubColumn} apiDeleteSubColumn={apiDeleteSubColumn} apiReorderSubColumns={apiReorderSubColumns} setShowAddSubCol={setShowAddSubCol} setActiveSubColTaskId={setActiveSubColTaskId} onOpenUpdates={openUpdates} perms={perms} />}
             {view === "kanban" && <KanbanView tasks={tasks} setTasks={setTasks} apiUpdateTask={apiUpdateTask} search={search} allPeople={allPeople} onOpenUpdates={openUpdates} />}
             {view === "timeline" && <TimelineView tasks={tasks} search={search} />}
           </>)}

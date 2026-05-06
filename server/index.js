@@ -748,7 +748,22 @@ app.post('/api/tasks',auth,(req,res)=>{
 app.put('/api/tasks/:id',auth,(req,res)=>{const{name,status,priority,responsible,totalOrders,totalCancellations,custom}=req.body;const t=db.prepare('SELECT * FROM tasks WHERE id=?').get(req.params.id);if(!t)return res.status(404).json({error:'Não encontrada'});
   // Parent deadline is auto-managed by runDailyRollover; client value is ignored.
   db.prepare('UPDATE tasks SET name=?,status=?,priority=?,responsible=?,total_orders=?,total_cancellations=?,custom=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(name??t.name,status??t.status,priority??t.priority,responsible?JSON.stringify(responsible):t.responsible,totalOrders??t.total_orders,totalCancellations??t.total_cancellations,custom?JSON.stringify(custom):t.custom,req.params.id);res.json({success:true});});
-app.delete('/api/tasks/:id',auth,adminOnly,(req,res)=>{db.prepare('DELETE FROM tasks WHERE id=?').run(req.params.id);res.json({success:true});});
+app.delete('/api/tasks/:id', auth, adminOnly, (req, res) => {
+  const id = req.params.id;
+  if (!db.prepare('SELECT id FROM tasks WHERE id=?').get(id)) return res.status(404).json({ error: 'Tarefa não encontrada' });
+  // Subitems cascade via FK; we still need to manually clean updates (no FK).
+  const tx = db.transaction(() => {
+    const subIds = db.prepare('SELECT id FROM subitems WHERE task_id=?').all(id).map(s => s.id);
+    db.prepare("DELETE FROM updates WHERE target_type='task' AND target_id=?").run(id);
+    if (subIds.length > 0) {
+      const placeholders = subIds.map(() => '?').join(',');
+      db.prepare(`DELETE FROM updates WHERE target_type='subitem' AND target_id IN (${placeholders})`).run(...subIds);
+    }
+    db.prepare('DELETE FROM tasks WHERE id=?').run(id);
+  });
+  tx();
+  res.json({ success: true });
+});
 
 app.put('/api/subitems/:id',auth,(req,res)=>{const{name,owner,status,responsible,total,deadline,custom}=req.body;const s=db.prepare('SELECT * FROM subitems WHERE id=?').get(req.params.id);if(!s)return res.status(404).json({error:'Não encontrado'});db.prepare('UPDATE subitems SET name=?,owner=?,status=?,responsible=?,total=?,deadline=?,custom=? WHERE id=?').run(name??s.name,owner??s.owner,status??s.status,responsible?JSON.stringify(responsible):s.responsible,total??s.total,deadline!==undefined?deadline:s.deadline,custom?JSON.stringify(custom):s.custom,req.params.id);res.json({success:true});});
 app.post('/api/subitems',auth,(req,res)=>{const{id,task_id,name,owner,status,responsible,total,deadline,custom}=req.body;const m=db.prepare('SELECT MAX(sort_order) as m FROM subitems WHERE task_id=?').get(task_id);db.prepare('INSERT INTO subitems (id,task_id,name,owner,status,responsible,total,deadline,custom,sort_order) VALUES(?,?,?,?,?,?,?,?,?,?)').run(id,task_id,name||'Novo subitem',owner||'',status||'Não iniciado',JSON.stringify(responsible||[]),total||0,deadline||null,JSON.stringify(custom||{}),(m?.m||0)+1);res.json({success:true});});
