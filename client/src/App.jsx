@@ -196,17 +196,51 @@ function AvatarGroup({ names = [], size = 28 }) { return <div style={{ display: 
 
 // ─── PEOPLE PICKER ───────────────────────────────────────────────────────────
 function PeoplePicker({ selected = [], onChange, allPeople }) {
-  const [open, setOpen] = useState(false); const [nn, setNn] = useState(""); const ref = useRef(null);
-  useClickOutside(ref, () => setOpen(false));
+  const [open, setOpen] = useState(false); const [nn, setNn] = useState("");
+  const triggerRef = useRef(null);
+  const popupRef = useRef(null);
+  // Position popup with `position: fixed` and viewport-relative coords so it
+  // escapes any ancestor with overflow:hidden/auto (e.g. the scrollable board area).
+  // Flip upward if there's not enough room below the trigger.
+  const [popup, setPopup] = useState({ top: 0, left: 0, ready: false });
+  useEffect(() => {
+    if (!open) return;
+    const update = () => {
+      if (!triggerRef.current) return;
+      const r = triggerRef.current.getBoundingClientRect();
+      const POPUP_H_EST = 280;
+      const flipUp = (r.bottom + POPUP_H_EST) > window.innerHeight && r.top > POPUP_H_EST;
+      setPopup({
+        top: flipUp ? r.top - POPUP_H_EST + 4 : r.bottom + 6,
+        left: Math.min(r.left, window.innerWidth - 220),
+        ready: true,
+      });
+    };
+    update();
+    window.addEventListener("scroll", update, true);
+    window.addEventListener("resize", update);
+    return () => { window.removeEventListener("scroll", update, true); window.removeEventListener("resize", update); };
+  }, [open]);
+  // Close on outside click. Must check both the trigger and the (portal-positioned) popup.
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e) => {
+      if (triggerRef.current && triggerRef.current.contains(e.target)) return;
+      if (popupRef.current && popupRef.current.contains(e.target)) return;
+      setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
   const toggle = (n) => onChange(selected.includes(n) ? selected.filter(x => x !== n) : [...selected, n]);
   const addC = () => { const t = nn.trim(); if (t && !selected.includes(t)) onChange([...selected, t]); setNn(""); };
   return (
-    <div ref={ref} style={{ position: "relative" }}>
+    <div ref={triggerRef} style={{ position: "relative" }}>
       <div onClick={() => setOpen(!open)} style={{ cursor: "pointer" }}>
         {selected.length > 0 ? <AvatarGroup names={selected} size={24} /> : <div style={{ width: 24, height: 24, borderRadius: "50%", border: "2px dashed #555", display: "flex", alignItems: "center", justifyContent: "center", color: "#555", fontSize: 13 }}>+</div>}
       </div>
-      {open && (
-        <div style={{ position: "absolute", top: "100%", left: 0, marginTop: 6, background: "#2a2d35", borderRadius: 10, padding: 10, minWidth: 200, zIndex: 50, boxShadow: "0 8px 24px rgba(0,0,0,.5)", border: "1px solid #3a3d45" }}>
+      {open && popup.ready && (
+        <div ref={popupRef} style={{ position: "fixed", top: popup.top, left: popup.left, background: "#2a2d35", borderRadius: 10, padding: 10, minWidth: 200, zIndex: 9999, boxShadow: "0 8px 24px rgba(0,0,0,.5)", border: "1px solid #3a3d45" }}>
           <div style={{ fontSize: 10, color: "#778ca3", fontWeight: 700, marginBottom: 6, textTransform: "uppercase" }}>Responsáveis</div>
           {allPeople.map(p => { const a = selected.includes(p); return (
             <div key={p} onClick={() => toggle(p)} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 6px", borderRadius: 6, cursor: "pointer", background: a ? "rgba(108,92,231,.2)" : "transparent", marginBottom: 1 }}>
