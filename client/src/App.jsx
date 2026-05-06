@@ -22,24 +22,31 @@ async function apiCall(path, opts = {}) {
   const h = { "Content-Type": "application/json" };
   if (_token) h["Authorization"] = `Bearer ${_token}`;
   const isMutation = opts.method && opts.method.toUpperCase() !== "GET";
+  // Strip non-fetch options before forwarding to fetch().
+  const { returnError, ...fetchOpts } = opts;
   if (isMutation) { _inFlightMutations++; _notifySync(); }
   try {
-    const res = await fetch(`${API_URL}/api${path}`, { ...opts, headers: { ...h, ...opts.headers } });
-    if (res.status === 401) { _token = null; localStorage.removeItem("rotina_token"); return null; }
-    const data = await res.json();
+    const res = await fetch(`${API_URL}/api${path}`, { ...fetchOpts, headers: { ...h, ...opts.headers } });
+    if (res.status === 401) {
+      _token = null; localStorage.removeItem("rotina_token");
+      if (returnError) return { error: 'Sessão expirada. Faça login novamente.', status: 401 };
+      return null;
+    }
+    let data; try { data = await res.json(); } catch { data = {}; }
     if (!res.ok) {
-      // 5xx = server-side fault → flag as unsaved so the user knows
       if (isMutation && res.status >= 500) { _syncFailed++; }
-      throw new Error(data.error || "Erro");
+      const msg = data.error || `Erro ${res.status}`;
+      if (returnError) return { error: msg, status: res.status };
+      throw new Error(msg);
     }
     if (isMutation && _syncFailed > 0) { _syncFailed = 0; }
     return data;
   } catch (e) {
-    // Network error (fetch threw) on a mutation → treat as unsaved
     if (isMutation && (e.name === "TypeError" || /Failed to fetch|NetworkError/i.test(e.message || ""))) {
       _syncFailed++;
     }
     console.error("API error:", e.message);
+    if (returnError) return { error: 'Falha de conexão com o servidor. Verifique sua internet.', status: 0 };
     return null;
   }
   finally { if (isMutation) { _inFlightMutations--; _notifySync(); } }
@@ -3545,10 +3552,8 @@ function Dashboard({ currentUser, onLogout }) {
   };
 
   const apiCreateUser = async ({ name, email, password, role }) => {
-    const res = await apiCall('/users', { method: 'POST', body: JSON.stringify({ name, email, password, role }) });
-    // apiCall returns null on 401/5xx/network error. Without this guard, the
-    // sort below threw on null.name and the modal hung in "Cadastrando...".
-    if (!res || res.error) return { error: res?.error || 'Erro ao criar usuário. Verifique sua conexão e tente novamente.' };
+    const res = await apiCall('/users', { method: 'POST', body: JSON.stringify({ name, email, password, role }), returnError: true });
+    if (!res || res.error) return { error: res?.error || 'Erro desconhecido' };
     setUsers(prev => [...prev, res].sort((a, b) => a.name.localeCompare(b.name)));
     if (res.avatar_color) PEOPLE_COLORS[res.name] = res.avatar_color;
     return { user: res };
