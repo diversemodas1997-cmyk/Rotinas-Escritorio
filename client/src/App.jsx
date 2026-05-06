@@ -3338,7 +3338,8 @@ function Dashboard({ currentUser, onLogout }) {
         setSubColumns(colsData.filter(c => c.scope === 'subitem'));
       }
       if (usersData) setUsers(usersData.map(u => ({ ...u, password: "******" })));
-      else setUsers(REGISTERED_USERS);
+      // No fallback to hardcoded REGISTERED_USERS: that would resurrect deleted users
+      // in the picker. If the API failed, stay empty until next successful fetch.
       if (autoData) setAutomations(autoData);
       else setAutomations(AI_AUTOMATIONS);
       setDataLoaded(true);
@@ -3544,10 +3545,15 @@ function Dashboard({ currentUser, onLogout }) {
   const apiDeleteUser = async (userId) => {
     const res = await apiCall(`/users/${userId}`, { method: 'DELETE' });
     if (res?.error) return { error: res.error };
-    setUsers(prev => prev.filter(u => u.id !== userId));
-    // Backend also strips the deleted name from every responsible array;
-    // refetch tasks so the UI reflects the cleanup immediately.
-    const tasksData = await apiCall(`/tasks?boardId=${encodeURIComponent(currentBoardId)}`);
+    // Re-fetch authoritative state from server (avoids any local-state drift).
+    // Backend also strips the deleted name from responsible arrays in tasks/subitems,
+    // so refetch tasks too so the UI reflects everything immediately.
+    const [usersData, tasksData] = await Promise.all([
+      apiCall('/users'),
+      apiCall(`/tasks?boardId=${encodeURIComponent(currentBoardId)}`),
+    ]);
+    if (usersData) setUsers(usersData.map(u => ({ ...u, password: "******" })));
+    else setUsers(prev => prev.filter(u => u.id !== userId));
     if (tasksData) setTasks(normalizeTasks(tasksData));
     return { success: true };
   };
