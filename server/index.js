@@ -462,13 +462,41 @@ app.post('/api/users',auth,adminOnly,(req,res)=>{
 app.delete('/api/users/:id',auth,adminOnly,(req,res)=>{
   const id = parseInt(req.params.id);
   if (id === req.user.id) return res.status(400).json({ error: 'Não pode excluir a si mesmo' });
-  const target = db.prepare('SELECT role FROM users WHERE id=?').get(id);
+  const target = db.prepare('SELECT name, role FROM users WHERE id=?').get(id);
   if (!target) return res.status(404).json({ error: 'Usuário não encontrado' });
   if (target.role === 'admin') {
     const ac = db.prepare("SELECT COUNT(*) as c FROM users WHERE role='admin'").get().c;
     if (ac <= 1) return res.status(400).json({ error: 'Precisa de pelo menos 1 administrador' });
   }
-  db.prepare('DELETE FROM users WHERE id=?').run(id);
+  const removedName = target.name;
+  // Cascade-clean: remove the deleted name from every responsible array.
+  // Names are stored as strings (not IDs) in tasks.responsible / subitems.responsible.
+  const tx = db.transaction(() => {
+    db.prepare('DELETE FROM users WHERE id=?').run(id);
+    let cleaned = 0;
+    const updTask = db.prepare('UPDATE tasks SET responsible=? WHERE id=?');
+    for (const t of db.prepare('SELECT id, responsible FROM tasks').all()) {
+      try {
+        const arr = JSON.parse(t.responsible || '[]');
+        if (Array.isArray(arr) && arr.includes(removedName)) {
+          updTask.run(JSON.stringify(arr.filter(n => n !== removedName)), t.id);
+          cleaned++;
+        }
+      } catch {}
+    }
+    const updSub = db.prepare('UPDATE subitems SET responsible=? WHERE id=?');
+    for (const s of db.prepare('SELECT id, responsible FROM subitems').all()) {
+      try {
+        const arr = JSON.parse(s.responsible || '[]');
+        if (Array.isArray(arr) && arr.includes(removedName)) {
+          updSub.run(JSON.stringify(arr.filter(n => n !== removedName)), s.id);
+          cleaned++;
+        }
+      } catch {}
+    }
+    if (cleaned > 0) console.log(`🧹 Removido "${removedName}" de ${cleaned} responsavel(es)`);
+  });
+  tx();
   res.json({ success: true });
 });
 app.put('/api/users/:id',auth,(req,res)=>{const{id}=req.params;if(req.user.id!==parseInt(id)&&req.user.role!=='admin')return res.status(403).json({error:'Sem permissão'});const{name,email,phone,department,bio,avatar_color,password}=req.body;const u=[];const p=[];if(name){u.push('name=?');p.push(name);}if(email){u.push('email=?');p.push(email.toLowerCase());}if(phone!==undefined){u.push('phone=?');p.push(phone);}if(department!==undefined){u.push('department=?');p.push(department);}if(bio!==undefined){u.push('bio=?');p.push(bio);}if(avatar_color){u.push('avatar_color=?');p.push(avatar_color);}if(password){u.push('password=?');p.push(bcrypt.hashSync(password,10));}if(!u.length)return res.status(400).json({error:'Nada para atualizar'});p.push(id);db.prepare(`UPDATE users SET ${u.join(',')} WHERE id=?`).run(...p);res.json(db.prepare('SELECT id,name,email,role,phone,department,bio,avatar_color FROM users WHERE id=?').get(id));});

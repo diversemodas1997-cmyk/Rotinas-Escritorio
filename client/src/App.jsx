@@ -3511,6 +3511,10 @@ function Dashboard({ currentUser, onLogout }) {
     const res = await apiCall(`/users/${userId}`, { method: 'DELETE' });
     if (res?.error) return { error: res.error };
     setUsers(prev => prev.filter(u => u.id !== userId));
+    // Backend also strips the deleted name from every responsible array;
+    // refetch tasks so the UI reflects the cleanup immediately.
+    const tasksData = await apiCall(`/tasks?boardId=${encodeURIComponent(currentBoardId)}`);
+    if (tasksData) setTasks(normalizeTasks(tasksData));
     return { success: true };
   };
 
