@@ -3183,6 +3183,72 @@ function RenameBoardModal({ target, onClose, onSave }) {
   );
 }
 
+// ─── CREATE USER MODAL (admin) ───────────────────────────────────────────────
+function CreateUserModal({ onClose, onCreate }) {
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [role, setRole] = useState("collaborator");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [ok, setOk] = useState(false);
+  const submit = async () => {
+    if (!name.trim() || !email.trim() || !password) { setErr("Preencha todos os campos"); return; }
+    if (password.length < 4) { setErr("Senha deve ter pelo menos 4 caracteres"); return; }
+    setBusy(true); setErr("");
+    const res = await onCreate({ name: name.trim(), email: email.trim(), password, role });
+    setBusy(false);
+    if (res?.error) { setErr(res.error); return; }
+    setOk(true);
+    setTimeout(() => onClose(), 900);
+  };
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, backdropFilter: "blur(4px)" }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#1a1d23", borderRadius: 14, padding: 26, width: 420, maxWidth: "92vw", border: "1px solid #2a2d35" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#00c875" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
+          <div style={{ fontWeight: 700, fontSize: 16, color: "#e8eaed" }}>Cadastrar usuário</div>
+        </div>
+
+        <div style={{ marginBottom: 12 }}>
+          <label style={{ fontSize: 11, color: "#778ca3", fontWeight: 600, display: "block", marginBottom: 4 }}>Nome</label>
+          <input autoFocus value={name} onChange={e => { setName(e.target.value); setErr(""); }} placeholder="Nome completo"
+            style={{ width: "100%", padding: "9px 11px", borderRadius: 7, border: "1px solid #2a2d35", background: "#13151a", color: "#e8eaed", fontSize: 13, outline: "none", boxSizing: "border-box" }} />
+        </div>
+
+        <div style={{ marginBottom: 12 }}>
+          <label style={{ fontSize: 11, color: "#778ca3", fontWeight: 600, display: "block", marginBottom: 4 }}>E-mail</label>
+          <input value={email} onChange={e => { setEmail(e.target.value); setErr(""); }} placeholder="usuario@empresa.com" type="email"
+            style={{ width: "100%", padding: "9px 11px", borderRadius: 7, border: "1px solid #2a2d35", background: "#13151a", color: "#e8eaed", fontSize: 13, outline: "none", boxSizing: "border-box" }} />
+        </div>
+
+        <div style={{ marginBottom: 12 }}>
+          <label style={{ fontSize: 11, color: "#778ca3", fontWeight: 600, display: "block", marginBottom: 4 }}>Senha provisória</label>
+          <input value={password} onChange={e => { setPassword(e.target.value); setErr(""); }} placeholder="Mínimo 4 caracteres" type="password"
+            style={{ width: "100%", padding: "9px 11px", borderRadius: 7, border: "1px solid #2a2d35", background: "#13151a", color: "#e8eaed", fontSize: 13, outline: "none", boxSizing: "border-box" }} />
+          <div style={{ fontSize: 10, color: "#778ca3", marginTop: 4 }}>O usuário poderá trocar depois em Editar perfil.</div>
+        </div>
+
+        <div style={{ marginBottom: 14 }}>
+          <label style={{ fontSize: 11, color: "#778ca3", fontWeight: 600, display: "block", marginBottom: 4 }}>Cargo</label>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={() => setRole("collaborator")} style={{ flex: 1, padding: "9px 8px", border: role === "collaborator" ? "2px solid #579bfc" : "1px solid #2a2d35", borderRadius: 7, background: role === "collaborator" ? "rgba(87,155,252,.1)" : "#13151a", color: "#e8eaed", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>👤 Colaborador</button>
+            <button onClick={() => setRole("admin")} style={{ flex: 1, padding: "9px 8px", border: role === "admin" ? "2px solid #e2445c" : "1px solid #2a2d35", borderRadius: 7, background: role === "admin" ? "rgba(226,68,92,.1)" : "#13151a", color: "#e8eaed", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>👑 Administrador</button>
+          </div>
+        </div>
+
+        {err && <div style={{ color: "#e2445c", fontSize: 12, marginBottom: 10, background: "rgba(226,68,92,.08)", padding: "8px 10px", borderRadius: 6 }}>⚠ {err}</div>}
+        {ok && <div style={{ color: "#00c875", fontSize: 12, marginBottom: 10, background: "rgba(0,200,117,.08)", padding: "8px 10px", borderRadius: 6 }}>✓ Usuário cadastrado!</div>}
+
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          <button onClick={onClose} disabled={busy} style={{ background: "transparent", color: "#c8cdd4", border: "1px solid #2a2d35", borderRadius: 7, padding: "9px 16px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Cancelar</button>
+          <button onClick={submit} disabled={busy || ok} style={{ background: ok ? "#00c875" : "#6c5ce7", color: "#fff", border: "none", borderRadius: 7, padding: "9px 16px", fontSize: 12, fontWeight: 600, cursor: "pointer", opacity: busy ? 0.6 : 1 }}>{busy ? "Cadastrando..." : (ok ? "✓" : "Cadastrar")}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── MAIN APP ────────────────────────────────────────────────────────────────
 function Dashboard({ currentUser, onLogout }) {
   const [tasks, setTasks] = useState([]);
@@ -3204,6 +3270,7 @@ function Dashboard({ currentUser, onLogout }) {
   const [showReports, setShowReports] = useState(false);
   const [reportsFullscreen, setReportsFullscreen] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
+  const [showCreateUser, setShowCreateUser] = useState(false);
   const [users, setUsers] = useState([]);
   const [dataLoaded, setDataLoaded] = useState(false);
   // Multi-board / folders
@@ -3587,6 +3654,14 @@ function Dashboard({ currentUser, onLogout }) {
                 <span style={{ fontSize: 13, fontWeight: 600, color: "#6c5ce7" }}>Editar perfil</span>
               </div>
               {isAdmin && (
+                <div onClick={() => { setShowUserMenu(false); setShowCreateUser(true); }}
+                  style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderRadius: 8, cursor: "pointer", transition: "background .1s" }}
+                  onMouseEnter={e => e.currentTarget.style.background = "rgba(0,200,117,.08)"} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#00c875" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: "#00c875" }}>Cadastrar usuário</span>
+                </div>
+              )}
+              {isAdmin && (
                 <div onClick={() => { setShowUserMenu(false); setShowAdminPanel(true); }}
                   style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderRadius: 8, cursor: "pointer", transition: "background .1s" }}
                   onMouseEnter={e => e.currentTarget.style.background = "rgba(226,68,92,.08)"} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
@@ -3825,6 +3900,7 @@ function Dashboard({ currentUser, onLogout }) {
       {showAdminPanel && isAdmin && <AdminPanel users={users} onUpdateRole={apiUpdateUserRole} onCreateUser={apiCreateUser} onDeleteUser={apiDeleteUser} onClose={() => setShowAdminPanel(false)} currentUser={currentUser.name} currentUserId={currentUser.id} />}
       {showReports && isAdmin && <ReportsPanel fullscreen={reportsFullscreen} onToggleFullscreen={() => setReportsFullscreen(f => !f)} onClose={() => { setShowReports(false); setReportsFullscreen(false); }} />}
       {showProfile && <ProfileEditor userData={currentUserData} onSave={apiUpdateUserProfile} onClose={() => setShowProfile(false)} allUsers={users} />}
+      {showCreateUser && isAdmin && <CreateUserModal onClose={() => setShowCreateUser(false)} onCreate={apiCreateUser} />}
 
       <style>{`
         @keyframes slideIn { from { transform: translateX(20px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
