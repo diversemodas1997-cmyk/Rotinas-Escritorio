@@ -728,7 +728,7 @@ function UpdatesPanel({ itemName, updates = [], onAddUpdate, onEditUpdate, onDel
 }
 
 // ─── NOTIFICATION PANEL ──────────────────────────────────────────────────────
-function NotificationPanel({ tasks, currentUser, onClose, onOpenUpdates }) {
+function NotificationPanel({ tasks, currentUser, onClose, onOpenUpdates, soundEnabled, onToggleSound }) {
   const notifications = useMemo(() => {
     const notifs = [];
     tasks.forEach(task => {
@@ -766,9 +766,18 @@ function NotificationPanel({ tasks, currentUser, onClose, onOpenUpdates }) {
 
   return (
     <div style={{ position: "absolute", top: "100%", right: 0, marginTop: 8, width: 380, maxHeight: 480, background: "#2a2d35", borderRadius: 12, boxShadow: "0 12px 40px rgba(0,0,0,.6)", border: "1px solid #3a3d45", zIndex: 60, overflow: "hidden", display: "flex", flexDirection: "column" }}>
-      <div style={{ padding: "14px 18px", borderBottom: "1px solid #3a3d45", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+      <div style={{ padding: "14px 18px", borderBottom: "1px solid #3a3d45", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
         <span style={{ fontWeight: 700, fontSize: 15, color: "#e8eaed" }}>Notificações</span>
-        <span style={{ fontSize: 12, color: "#778ca3" }}>{notifications.length} itens</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {onToggleSound && (
+            <button onClick={onToggleSound}
+              title={soundEnabled ? "Som ativado — clique para silenciar" : "Som desativado — clique para ativar"}
+              style={{ background: "transparent", border: "1px solid #3a3d45", borderRadius: 6, padding: "3px 8px", fontSize: 13, cursor: "pointer", color: soundEnabled ? "#fdab3d" : "#556", lineHeight: 1 }}>
+              {soundEnabled ? "🔔" : "🔕"}
+            </button>
+          )}
+          <span style={{ fontSize: 12, color: "#778ca3" }}>{notifications.length} itens</span>
+        </div>
       </div>
       <div style={{ flex: 1, overflow: "auto", padding: 8 }}>
         {notifications.length === 0 && (
@@ -3474,6 +3483,67 @@ function Dashboard({ currentUser, onLogout }) {
     // eslint-disable-next-line
   }, [dataLoaded, currentBoardId]);
 
+  // ─── SOM DE NOTIFICAÇÃO PARA NOVAS MENSAGENS ───────────────────────────────
+  // Toca um chime curto quando uma mensagem (update) de outro usuário do quadro
+  // atual aparece. Usa Web Audio API para não depender de arquivos externos.
+  const knownUpdateIdsRef = useRef(null);
+  const audioCtxRef = useRef(null);
+  const [notifSoundEnabled, setNotifSoundEnabled] = useState(() => localStorage.getItem("notifSoundEnabled") !== "0");
+  // Ref espelhada para o audio effect ler sem entrar nas deps (toggle não reseta baseline).
+  const notifSoundEnabledRef = useRef(notifSoundEnabled);
+  useEffect(() => { notifSoundEnabledRef.current = notifSoundEnabled; localStorage.setItem("notifSoundEnabled", notifSoundEnabled ? "1" : "0"); }, [notifSoundEnabled]);
+  // Snapshot é reiniciado ao trocar de quadro: o primeiro load do quadro novo
+  // apenas registra IDs existentes, sem tocar som.
+  useEffect(() => { knownUpdateIdsRef.current = null; }, [currentBoardId]);
+  useEffect(() => {
+    if (!dataLoaded) return;
+    const userName = currentUser.name;
+    const currentIds = new Set();
+    let hasNewFromOther = false;
+    const prev = knownUpdateIdsRef.current;
+    const collect = (updates) => {
+      for (const u of updates || []) {
+        if (!u || !u.id) continue;
+        currentIds.add(u.id);
+        if (prev && !prev.has(u.id) && u.author && u.author !== userName) {
+          hasNewFromOther = true;
+        }
+      }
+    };
+    tasks.forEach(t => {
+      collect(t.updates);
+      (t.subitems || []).forEach(sub => collect(sub.updates));
+    });
+    if (prev !== null && hasNewFromOther && notifSoundEnabledRef.current) {
+      try {
+        if (!audioCtxRef.current) {
+          const Ctx = window.AudioContext || window.webkitAudioContext;
+          if (Ctx) audioCtxRef.current = new Ctx();
+        }
+        const ctx = audioCtxRef.current;
+        if (ctx) {
+          if (ctx.state === "suspended") ctx.resume();
+          const now = ctx.currentTime;
+          const tone = (freq, start, dur) => {
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.type = "sine";
+            osc.frequency.setValueAtTime(freq, now + start);
+            gain.gain.setValueAtTime(0, now + start);
+            gain.gain.linearRampToValueAtTime(0.18, now + start + 0.01);
+            gain.gain.exponentialRampToValueAtTime(0.0001, now + start + dur);
+            osc.connect(gain).connect(ctx.destination);
+            osc.start(now + start);
+            osc.stop(now + start + dur + 0.02);
+          };
+          tone(880, 0, 0.18);
+          tone(1175, 0.12, 0.22);
+        }
+      } catch {}
+    }
+    knownUpdateIdsRef.current = currentIds;
+  }, [tasks, dataLoaded, currentUser.name]);
+
   // ─── API-BACKED SETTERS ────────────────────────────────────────────────────
   const apiUpdateTask = (tid, newTask) => {
     setTasks(prev => prev.map(t => t.id === tid ? (typeof newTask === "function" ? newTask(t) : newTask) : t));
@@ -3822,7 +3892,7 @@ function Dashboard({ currentUser, onLogout }) {
             </svg>
             {notifCount > 0 && <div style={{ position: "absolute", top: 2, right: 2, minWidth: 16, height: 16, borderRadius: 8, background: "#e2445c", color: "#fff", fontSize: 9, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 3px" }}>{notifCount > 9 ? "9+" : notifCount}</div>}
           </div>
-          {showNotifs && <NotificationPanel tasks={tasks} currentUser={currentUser.name} onClose={() => setShowNotifs(false)} onOpenUpdates={(tid, sid) => openUpdates(tid, sid)} />}
+          {showNotifs && <NotificationPanel tasks={tasks} currentUser={currentUser.name} onClose={() => setShowNotifs(false)} onOpenUpdates={(tid, sid) => openUpdates(tid, sid)} soundEnabled={notifSoundEnabled} onToggleSound={() => setNotifSoundEnabled(v => !v)} />}
         </div>
 
         {isAdmin && (
