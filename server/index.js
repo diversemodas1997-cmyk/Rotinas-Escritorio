@@ -992,6 +992,23 @@ app.get('/api/admin/backup', backupAuth, (req, res) => {
   res.download(DB_PATH, `database.backup-${stamp}.sqlite`);
 });
 
+// One-shot admin: zera a tabela `updates` (relatorios/mensagens do quadro).
+// Faz backup do DB para BACKUP_DIR antes de deletar. Operacao irreversivel.
+app.post('/api/admin/wipe-updates', auth, adminOnly, async (req, res) => {
+  try {
+    const count = db.prepare('SELECT COUNT(*) AS c FROM updates').get().c;
+    if (req.query.dry === '1') return res.json({ success: true, count, dryRun: true });
+    if (!fs.existsSync(BACKUP_DIR)) fs.mkdirSync(BACKUP_DIR, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const dest = path.join(BACKUP_DIR, `database.pre-wipe-${stamp}.sqlite`);
+    await db.backup(dest);
+    db.prepare('DELETE FROM updates').run();
+    res.json({ success: true, deleted: count, backup: path.basename(dest) });
+  } catch (e) {
+    res.status(500).json({ error: 'Falha ao limpar: ' + e.message });
+  }
+});
+
 if(process.env.NODE_ENV==='production'){app.use(express.static(path.join(__dirname,'../client/build')));app.get('*',(req,res)=>res.sendFile(path.join(__dirname,'../client/build/index.html')));}
 
 app.listen(PORT,()=>console.log(`🚀 Server running on port ${PORT}`));

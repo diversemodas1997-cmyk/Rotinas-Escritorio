@@ -2324,6 +2324,30 @@ function AdminPanel({ users, onUpdateRole, onCreateUser, onDeleteUser, onClose, 
 
   const adminCount = users.filter(u => u.role === "admin").length;
 
+  // ─── Zona perigosa: wipe de todas as mensagens (limpeza de teste) ───────────
+  const [wipeStep, setWipeStep] = useState(null); // null | 'confirm' | 'done'
+  const [wipeCount, setWipeCount] = useState(0);
+  const [wiping, setWiping] = useState(false);
+  const [wipeResult, setWipeResult] = useState("");
+  const startWipe = async () => {
+    setWiping(true); setWipeResult("");
+    try {
+      const r = await apiCall("/admin/wipe-updates?dry=1", { method: "POST" });
+      if (!r) { setWipeResult("Falha de conexao"); return; }
+      setWipeCount(r.count || 0);
+      setWipeStep("confirm");
+    } finally { setWiping(false); }
+  };
+  const confirmWipe = async () => {
+    setWiping(true); setWipeResult("");
+    try {
+      const r = await apiCall("/admin/wipe-updates", { method: "POST", returnError: true });
+      if (r?.error) { setWipeResult("Erro: " + r.error); setWipeStep("done"); return; }
+      setWipeResult(`Apagadas ${r.deleted} mensagem(ns). Backup: ${r.backup}`);
+      setWipeStep("done");
+    } finally { setWiping(false); }
+  };
+
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, backdropFilter: "blur(4px)" }} onClick={onClose}>
       <div style={{ background: "#1a1d23", borderRadius: 18, padding: 0, width: 560, maxWidth: "94vw", border: "1px solid #2a2d35", boxShadow: "0 20px 60px rgba(0,0,0,.5)", overflow: "hidden", maxHeight: "90vh", display: "flex", flexDirection: "column" }} onClick={e => e.stopPropagation()}>
@@ -2441,6 +2465,34 @@ function AdminPanel({ users, onUpdateRole, onCreateUser, onDeleteUser, onClose, 
               );
             })}
           </div>
+        </div>
+
+        {/* Zona perigosa */}
+        <div style={{ padding: "14px 24px", borderTop: "1px solid #2a2d35", background: "rgba(226,68,92,.04)" }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: "#e2445c", textTransform: "uppercase", letterSpacing: ".5px", marginBottom: 8 }}>⚠️ Zona perigosa</div>
+          {wipeStep === null && (
+            <button onClick={startWipe} disabled={wiping}
+              style={{ padding: "7px 14px", borderRadius: 7, border: "1px solid #e2445c60", background: "transparent", color: "#e2445c", fontSize: 12, fontWeight: 600, cursor: wiping ? "wait" : "pointer" }}>
+              {wiping ? "Verificando..." : "🗑 Apagar TODAS as mensagens (limpeza de teste)"}
+            </button>
+          )}
+          {wipeStep === "confirm" && (
+            <div>
+              <div style={{ fontSize: 12, color: "#a5b1c2", marginBottom: 10 }}>
+                Vai apagar <b style={{ color: "#e2445c" }}>{wipeCount}</b> mensagem(ns) de todos os quadros. Um backup do banco será gravado antes em <code>backups/database.pre-wipe-...sqlite</code>. <b>Esta ação não pode ser desfeita pela interface.</b>
+              </div>
+              <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                <button onClick={() => { setWipeStep(null); setWipeResult(""); }} disabled={wiping} style={{ padding: "7px 14px", borderRadius: 7, border: "1px solid #444", background: "transparent", color: "#a5b1c2", fontSize: 12, cursor: "pointer" }}>Cancelar</button>
+                <button onClick={confirmWipe} disabled={wiping} style={{ padding: "7px 14px", borderRadius: 7, border: "none", background: "#e2445c", color: "#fff", fontSize: 12, fontWeight: 600, cursor: wiping ? "wait" : "pointer" }}>{wiping ? "Apagando..." : "Confirmar exclusão"}</button>
+              </div>
+            </div>
+          )}
+          {wipeStep === "done" && (
+            <div>
+              <div style={{ fontSize: 12, color: wipeResult.startsWith("Erro") ? "#e2445c" : "#00c875", marginBottom: 8 }}>{wipeResult}</div>
+              <button onClick={() => { setWipeStep(null); setWipeResult(""); }} style={{ padding: "6px 12px", borderRadius: 6, border: "1px solid #444", background: "transparent", color: "#a5b1c2", fontSize: 11, cursor: "pointer" }}>Fechar</button>
+            </div>
+          )}
         </div>
 
         {/* Confirm dialog */}
