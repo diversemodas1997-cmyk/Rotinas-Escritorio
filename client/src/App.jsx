@@ -472,6 +472,7 @@ function UpdatesPanel({ itemName, updates = [], onAddUpdate, onEditUpdate, onDel
   const [editingId, setEditingId] = useState(null);
   const [editText, setEditText] = useState("");
   const [editFiles, setEditFiles] = useState([]);
+  const [lightbox, setLightbox] = useState(null); // { url, name } | null
   const inputRef = useRef(null);
   const editRef = useRef(null);
   const listRef = useRef(null);
@@ -506,10 +507,38 @@ function UpdatesPanel({ itemName, updates = [], onAddUpdate, onEditUpdate, onDel
     return (bytes / (1024 * 1024)).toFixed(1) + " MB";
   };
 
-  const processFiles = (fileList, setter) => {
-    Array.from(fileList).forEach(file => {
-      setter(prev => [...prev, { name: file.name, size: formatFileSize(file.size), realFile: file }]);
-    });
+  const processFiles = async (fileList, setter) => {
+    const arr = Array.from(fileList);
+    // Placeholder otimista enquanto sobe
+    const placeholders = arr.map(file => ({
+      _key: "ph_" + Math.random().toString(36).slice(2),
+      name: file.name,
+      size: formatFileSize(file.size),
+      uploading: true,
+    }));
+    setter(prev => [...prev, ...placeholders]);
+    const formData = new FormData();
+    arr.forEach(f => formData.append("files", f));
+    try {
+      const token = getToken();
+      const res = await fetch(`${API_URL}/api/upload`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: formData,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      const uploaded = (data.files || []).map(f => ({
+        id: f.id, name: f.name, mime: f.mime, size: formatFileSize(f.size),
+      }));
+      setter(prev => {
+        const remaining = prev.filter(p => !placeholders.find(ph => ph._key === p._key));
+        return [...remaining, ...uploaded];
+      });
+    } catch (e) {
+      setter(prev => prev.filter(p => !placeholders.find(ph => ph._key === p._key)));
+      alert("Falha no upload: " + (e.message || "erro desconhecido"));
+    }
   };
 
   const addDriveFile = (driveFile, setter) => {
@@ -526,6 +555,7 @@ function UpdatesPanel({ itemName, updates = [], onAddUpdate, onEditUpdate, onDel
 
   const handleSend = () => {
     if (!text.trim() && files.length === 0) return;
+    if (files.some(f => f.uploading)) { alert("Aguarde o upload terminar."); return; }
     const mentions = parseMentions(text, allPeople);
     onAddUpdate({ id: "u" + Date.now(), author: "Você", text: text.trim(), mentions, files: [...files], time: new Date().toISOString() });
     setText(""); setFiles([]);
@@ -535,6 +565,7 @@ function UpdatesPanel({ itemName, updates = [], onAddUpdate, onEditUpdate, onDel
   const cancelEdit = () => { setEditingId(null); setEditText(""); setEditFiles([]); };
   const saveEdit = (u) => {
     if (!editText.trim() && editFiles.length === 0) { cancelEdit(); return; }
+    if (editFiles.some(f => f.uploading)) { alert("Aguarde o upload terminar."); return; }
     if (onEditUpdate) onEditUpdate(u.id, editText.trim(), editFiles);
     setEditingId(null); setEditText(""); setEditFiles([]);
   };
@@ -608,8 +639,8 @@ function UpdatesPanel({ itemName, updates = [], onAddUpdate, onEditUpdate, onDel
                   {editFiles.length > 0 && (
                     <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
                       {editFiles.map((f, fi) => (
-                        <div key={fi} style={{ display: "flex", alignItems: "center", gap: 4, background: "#2a2d35", borderRadius: 6, padding: "4px 8px", fontSize: 11, color: "#a5b1c2" }}>
-                          📎 {f.name}
+                        <div key={fi} style={{ display: "flex", alignItems: "center", gap: 4, background: "#2a2d35", borderRadius: 6, padding: "4px 8px", fontSize: 11, color: f.uploading ? "#fdab3d" : "#a5b1c2", opacity: f.uploading ? 0.7 : 1 }}>
+                          {f.uploading ? "⏳" : "📎"} {f.name}{f.uploading ? " (enviando...)" : ""}
                           <span onClick={() => setEditFiles(prev => prev.filter((_, j) => j !== fi))} style={{ cursor: "pointer", color: "#e2445c", fontWeight: 700, marginLeft: 2 }}>×</span>
                         </div>
                       ))}
@@ -650,22 +681,45 @@ function UpdatesPanel({ itemName, updates = [], onAddUpdate, onEditUpdate, onDel
 
               {u.files && u.files.length > 0 && (
                 <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
-                  {u.files.map((f, fi) => (
-                    <div key={fi} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", background: "#1a1d23", borderRadius: 8, border: "1px solid #333" }}>
-                      <div style={{ width: 32, height: 32, borderRadius: 6, background: f.name.endsWith(".pdf") ? "#e2445c" : f.name.endsWith(".xlsx") ? "#00c875" : f.name.endsWith(".jpg") || f.name.endsWith(".png") ? "#fdab3d" : "#579bfc", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700, color: "#fff" }}>
-                        {f.name.split(".").pop().toUpperCase().slice(0, 3)}
+                  {u.files.map((f, fi) => {
+                    const ext = (f.name || "").split(".").pop().toLowerCase();
+                    const isImage = (f.mime && f.mime.startsWith("image/")) || ["jpg","jpeg","png","gif","webp","bmp","svg"].includes(ext);
+                    const hasFile = !!f.id;
+                    const fileUrl = hasFile ? `${API_URL}/api/files/${f.id}?token=${encodeURIComponent(getToken() || "")}` : null;
+                    const downloadUrl = hasFile ? `${fileUrl}&download=1` : null;
+                    const iconBg = ext === "pdf" ? "#e2445c" : ext === "xlsx" || ext === "xls" || ext === "csv" ? "#00c875" : isImage ? "#fdab3d" : ext === "doc" || ext === "docx" ? "#579bfc" : "#778ca3";
+                    return (
+                      <div key={fi} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", background: "#1a1d23", borderRadius: 8, border: "1px solid #333", opacity: hasFile ? 1 : 0.55 }}>
+                        {hasFile && isImage ? (
+                          <img src={fileUrl} alt={f.name} loading="lazy"
+                            onClick={() => setLightbox({ url: fileUrl, name: f.name })}
+                            style={{ width: 56, height: 56, borderRadius: 6, objectFit: "cover", cursor: "zoom-in", border: "1px solid #2a2d35", background: "#0f1115" }} />
+                        ) : (
+                          <div style={{ width: 56, height: 56, borderRadius: 6, background: iconBg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 700, color: "#fff", flexShrink: 0 }}>
+                            {(ext || "?").toUpperCase().slice(0, 4)}
+                          </div>
+                        )}
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 12, fontWeight: 600, color: "#e8eaed", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.name}</div>
+                          <div style={{ fontSize: 10, color: "#778ca3", marginBottom: 4 }}>{f.size}{f.uploading ? " • enviando..." : ""}</div>
+                          {hasFile ? (
+                            <div style={{ display: "flex", gap: 6 }}>
+                              <a href={fileUrl} target="_blank" rel="noopener noreferrer"
+                                style={{ fontSize: 11, color: "#579bfc", textDecoration: "none", padding: "2px 8px", borderRadius: 4, border: "1px solid #2a4d7a", background: "rgba(87,155,252,.08)" }}>👁 Abrir</a>
+                              <a href={downloadUrl}
+                                style={{ fontSize: 11, color: "#a5b1c2", textDecoration: "none", padding: "2px 8px", borderRadius: 4, border: "1px solid #3a3d45", background: "transparent" }}>⬇ Baixar</a>
+                            </div>
+                          ) : (
+                            <div style={{ fontSize: 10, color: "#e2445c", fontStyle: "italic" }}>arquivo indisponível (anexo antigo)</div>
+                          )}
+                        </div>
+                        {isOwn && <span onClick={() => { if (onDeleteFile) onDeleteFile(u.id, fi); }}
+                          style={{ fontSize: 13, cursor: "pointer", color: "#556", padding: "2px 6px", borderRadius: 4, transition: "all .15s" }} title="Remover anexo"
+                          onMouseEnter={e => { e.currentTarget.style.color = "#e2445c"; e.currentTarget.style.background = "rgba(226,68,92,.1)"; }}
+                          onMouseLeave={e => { e.currentTarget.style.color = "#556"; e.currentTarget.style.background = "transparent"; }}>✕</span>}
                       </div>
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontSize: 12, fontWeight: 600, color: "#e8eaed" }}>{f.name}</div>
-                        <div style={{ fontSize: 10, color: "#778ca3" }}>{f.size}</div>
-                      </div>
-                      <span style={{ fontSize: 14, cursor: "pointer", color: "#579bfc" }} title="Baixar">⬇</span>
-                      {isOwn && <span onClick={() => { if (onDeleteFile) onDeleteFile(u.id, fi); }}
-                        style={{ fontSize: 13, cursor: "pointer", color: "#556", padding: "2px 4px", borderRadius: 4, transition: "all .15s" }} title="Remover anexo"
-                        onMouseEnter={e => { e.currentTarget.style.color = "#e2445c"; e.currentTarget.style.background = "rgba(226,68,92,.1)"; }}
-                        onMouseLeave={e => { e.currentTarget.style.color = "#556"; e.currentTarget.style.background = "transparent"; }}>✕</span>}
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -678,8 +732,8 @@ function UpdatesPanel({ itemName, updates = [], onAddUpdate, onEditUpdate, onDel
           {files.length > 0 && (
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
               {files.map((f, i) => (
-                <div key={i} style={{ display: "flex", alignItems: "center", gap: 4, background: "#2a2d35", borderRadius: 6, padding: "4px 8px", fontSize: 11, color: "#a5b1c2" }}>
-                  📎 {f.name} <span onClick={() => setFiles(files.filter((_, j) => j !== i))} style={{ cursor: "pointer", color: "#e2445c", fontWeight: 700, marginLeft: 2 }}>×</span>
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 4, background: "#2a2d35", borderRadius: 6, padding: "4px 8px", fontSize: 11, color: f.uploading ? "#fdab3d" : "#a5b1c2", opacity: f.uploading ? 0.7 : 1 }}>
+                  {f.uploading ? "⏳" : "📎"} {f.name}{f.uploading ? " (enviando...)" : ""} <span onClick={() => setFiles(files.filter((_, j) => j !== i))} style={{ cursor: "pointer", color: "#e2445c", fontWeight: 700, marginLeft: 2 }}>×</span>
                 </div>
               ))}
             </div>
@@ -723,6 +777,17 @@ function UpdatesPanel({ itemName, updates = [], onAddUpdate, onEditUpdate, onDel
           </div>
         </div>
       </div>
+      {lightbox && (
+        <div onClick={() => setLightbox(null)}
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.85)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", cursor: "zoom-out", padding: 24 }}>
+          <img src={lightbox.url} alt={lightbox.name}
+            onClick={e => e.stopPropagation()}
+            style={{ maxWidth: "95%", maxHeight: "90%", objectFit: "contain", borderRadius: 8, boxShadow: "0 8px 40px rgba(0,0,0,.6)" }} />
+          <div style={{ position: "absolute", top: 16, right: 20, color: "#fff", fontSize: 13, fontWeight: 600, background: "rgba(0,0,0,.5)", padding: "6px 12px", borderRadius: 6 }}>
+            {lightbox.name} <span style={{ marginLeft: 12, cursor: "pointer", color: "#a5b1c2" }} onClick={() => setLightbox(null)}>✕</span>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

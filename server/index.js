@@ -6,6 +6,8 @@ const jwt = require('jsonwebtoken');
 const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
+const multer = require('multer');
 const { parseAutomation, healthCheck: geminiHealthCheck } = require('./automations/parser');
 const { execute: executeAutomation } = require('./automations/executor');
 const { validateRule } = require('./automations/schema');
@@ -383,6 +385,28 @@ setInterval(() => { try { runDailyBackup(); } catch (e) { console.error('Backup 
 
 function auth(req,res,next){const t=req.headers.authorization?.split(' ')[1];if(!t)return res.status(401).json({error:'Token necessário'});try{req.user=jwt.verify(t,JWT_SECRET);next();}catch{return res.status(401).json({error:'Token inválido'});}}
 function adminOnly(req,res,next){if(req.user.role!=='admin')return res.status(403).json({error:'Acesso restrito'});next();}
+
+// Auth para arquivos: aceita token via header OU query param (?token=...).
+// O navegador nao envia Authorization header em <img src>, <a href> ou nova aba,
+// entao precisamos do query param para visualizacao inline.
+function authFile(req, res, next) {
+  const t = req.headers.authorization?.split(' ')[1] || req.query.token;
+  if (!t) return res.status(401).json({ error: 'Token necessário' });
+  try { req.user = jwt.verify(t, JWT_SECRET); next(); }
+  catch { return res.status(401).json({ error: 'Token inválido' }); }
+}
+
+// Diretorio de uploads: persistente em prod (/data/uploads no Render),
+// local em dev. Cada arquivo eh salvo como <id> + sidecar <id>.json com metadados.
+const UPLOAD_DIR = process.env.UPLOAD_DIR || (DB_PATH.startsWith('/data') ? '/data/uploads' : path.join(__dirname, 'uploads'));
+if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+const uploadHandler = multer({
+  storage: multer.diskStorage({
+    destination: UPLOAD_DIR,
+    filename: (_req, _file, cb) => cb(null, crypto.randomBytes(12).toString('hex')),
+  }),
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB por arquivo
+});
 
 app.post('/api/auth/login',(req,res)=>{const{email,password}=req.body;const u=db.prepare('SELECT * FROM users WHERE email=?').get(email?.toLowerCase?.());if(!u||!bcrypt.compareSync(password,u.password))return res.status(401).json({error:'Credenciais inválidas'});const token=jwt.sign({id:u.id,name:u.name,email:u.email,role:u.role},JWT_SECRET,{expiresIn:'7d'});res.json({token,user:{id:u.id,name:u.name,email:u.email,role:u.role,phone:u.phone,department:u.department,bio:u.bio,avatar_color:u.avatar_color}});});
 
@@ -990,6 +1014,53 @@ function backupAuth(req, res, next) {
 app.get('/api/admin/backup', backupAuth, (req, res) => {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   res.download(DB_PATH, `database.backup-${stamp}.sqlite`);
+});
+
+// Upload de anexos. Retorna metadata (id, name, mime, size) que o cliente
+// guarda em updates.files. Os bytes ficam em UPLOAD_DIR/<id>.
+app.post('/api/upload', auth, (req, res) => {
+  uploadHandler.array('files', 10)(req, res, (err) => {
+    if (err) {
+      const msg = err.code === 'LIMIT_FILE_SIZE' ? 'Arquivo excede o limite de 10 MB' : err.message;
+      return res.status(400).json({ error: msg });
+    }
+    try {
+      const out = (req.files || []).map(f => {
+        const meta = {
+          name: f.originalname,
+          mime: f.mimetype,
+          size: f.size,
+          uploadedAt: new Date().toISOString(),
+          uploadedBy: req.user.name,
+        };
+        fs.writeFileSync(path.join(UPLOAD_DIR, f.filename + '.json'), JSON.stringify(meta));
+        return { id: f.filename, name: f.originalname, mime: f.mimetype, size: f.size };
+      });
+      res.json({ success: true, files: out });
+    } catch (e) {
+      res.status(500).json({ error: 'Falha ao salvar upload: ' + e.message });
+    }
+  });
+});
+
+// Servir anexo. Por padrao inline (browser abre se souber renderizar).
+// ?download=1 forca attachment.
+app.get('/api/files/:id', authFile, (req, res) => {
+  const id = req.params.id;
+  if (!/^[a-f0-9]{24}$/.test(id)) return res.status(400).json({ error: 'ID inválido' });
+  const filePath = path.join(UPLOAD_DIR, id);
+  const metaPath = filePath + '.json';
+  if (!fs.existsSync(filePath) || !fs.existsSync(metaPath)) {
+    return res.status(404).json({ error: 'Arquivo não encontrado' });
+  }
+  let meta;
+  try { meta = JSON.parse(fs.readFileSync(metaPath, 'utf8')); }
+  catch { return res.status(500).json({ error: 'Metadados corrompidos' }); }
+  res.setHeader('Content-Type', meta.mime || 'application/octet-stream');
+  const dispoType = req.query.download === '1' ? 'attachment' : 'inline';
+  const safeName = encodeURIComponent(meta.name || id);
+  res.setHeader('Content-Disposition', `${dispoType}; filename*=UTF-8''${safeName}`);
+  res.sendFile(filePath);
 });
 
 // One-shot admin: zera a tabela `updates` (relatorios/mensagens do quadro).
