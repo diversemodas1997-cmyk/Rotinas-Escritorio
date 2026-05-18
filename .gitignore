@@ -2,3 +2,4 @@ node_modules/
 server/database.sqlite
 client/build/
 .env
+autostart/server.log
