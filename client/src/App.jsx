@@ -1521,8 +1521,15 @@ function AIPanel({ tasks, automations, setAutomations, canManageAutomations, col
     setAutoError(""); setAutoParsing(true);
     try {
       const r = await rawFetch("/admin/gemini-health");
-      if (r.ok) setAutoError(`✅ Gemini OK (modelo: ${r.model}). Resposta teste: ${r.response}`);
-      else setAutoError(`❌ Gemini com problema: ${r.error}`);
+      let q = "";
+      if (r.quota) {
+        const parts = [`${r.quota.rpm}/${r.quota.rpmLimit} por min`, `${r.quota.rpd}/${r.quota.rpdLimit} por dia`];
+        if (r.quota.dailyCooldownMinLeft) parts.push(`⏳ diário em ${r.quota.dailyCooldownMinLeft} min`);
+        if (r.quota.minuteCooldownSecLeft) parts.push(`⏳ minuto em ${r.quota.minuteCooldownSecLeft}s`);
+        q = ` [${parts.join(" · ")}]`;
+      }
+      if (r.ok) setAutoError(`✅ Gemini OK (modelo: ${r.model}). Resposta teste: ${r.response}${q}`);
+      else setAutoError(`❌ Gemini com problema: ${r.error}${q}`);
     } catch (e) {
       setAutoError(`❌ Falha ao testar: ${e.message}`);
     } finally {

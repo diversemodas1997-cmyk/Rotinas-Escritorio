@@ -8,7 +8,7 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const multer = require('multer');
-const { parseAutomation, healthCheck: geminiHealthCheck } = require('./automations/parser');
+const { parseAutomation, healthCheck: geminiHealthCheck, quotaStatus: geminiQuotaStatus } = require('./automations/parser');
 const { execute: executeAutomation } = require('./automations/executor');
 const { validateRule } = require('./automations/schema');
 
@@ -905,7 +905,9 @@ app.post('/api/automations', auth, adminOnly, async (req, res) => {
     res.json({ id, name: displayName, icon: displayIcon, active: true, builtIn: false, ruleConfig: rule, naturalPrompt: description, createdBy: req.user.name });
   } catch (e) {
     console.error('Automation parse error:', e.message);
-    res.status(400).json({ error: e.message });
+    const msg = e.message || '';
+    const isQuota = /429|RESOURCE_EXHAUSTED|quota|Limite local/i.test(msg);
+    res.status(isQuota ? 429 : 400).json({ error: msg });
   }
 });
 
@@ -940,7 +942,7 @@ app.delete('/api/automations/:id', auth, adminOnly, (req, res) => {
 
 app.get('/api/admin/gemini-health', auth, adminOnly, async (req, res) => {
   const result = await geminiHealthCheck();
-  res.json(result);
+  res.json({ ...result, quota: geminiQuotaStatus() });
 });
 
 // ===== Daily snapshots report (admin only) =====
