@@ -4,7 +4,7 @@
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const { ruleJsonSchema, validateRule } = require('./schema');
 
-const MODEL = 'gemini-2.0-flash';
+const MODEL = 'gemini-2.5-flash';
 
 // Free-tier limits for gemini-2.0-flash are 15 RPM / 200 RPD per project.
 // We keep local guard rails a bit below to absorb burstiness.
