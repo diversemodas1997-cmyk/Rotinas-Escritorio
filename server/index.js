@@ -82,6 +82,11 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY, value TEXT
   );
+  CREATE TABLE IF NOT EXISTS notification_log (
+    rule_id TEXT NOT NULL, target_type TEXT NOT NULL, target_id TEXT NOT NULL,
+    date_key TEXT NOT NULL, sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (rule_id, target_type, target_id, date_key)
+  );
 `);
 
 // Non-destructive migration: add scope/parent_column_id to existing databases
@@ -382,6 +387,33 @@ function runDailyBackup() {
 }
 runDailyBackup();
 setInterval(() => { try { runDailyBackup(); } catch (e) { console.error('Backup tick err:', e.message); } }, 60 * 60 * 1000);
+
+// ===== Scheduler de automações 'notify' =====
+// Roda a cada 15 min, varrendo automações ativas type='notify' e executando.
+// Idempotência por dia garantida pela tabela notification_log.
+function runNotifyScheduler() {
+  const rows = db.prepare("SELECT id, rule_config FROM automations WHERE active=1 AND rule_config IS NOT NULL").all();
+  let totalApplied = 0;
+  for (const row of rows) {
+    let rule;
+    try { rule = JSON.parse(row.rule_config); } catch { continue; }
+    if (rule?.type !== 'notify') continue;
+    try {
+      const result = executeAutomation({ db, rule, ruleId: row.id });
+      if (result.applied > 0) {
+        console.log(`🔔 [${row.id}] ${result.summary}`);
+        totalApplied += result.applied;
+      }
+      const status = result.errors.length ? `erro: ${result.errors[0]}` : `ok (${result.applied})`;
+      db.prepare('UPDATE automations SET last_run_at=CURRENT_TIMESTAMP, last_run_status=? WHERE id=?').run(status, row.id);
+    } catch (e) {
+      console.error(`Notify scheduler err em ${row.id}:`, e.message);
+    }
+  }
+  return totalApplied;
+}
+setTimeout(() => { try { runNotifyScheduler(); } catch (e) { console.error('Notify init err:', e.message); } }, 10 * 1000);
+setInterval(() => { try { runNotifyScheduler(); } catch (e) { console.error('Notify tick err:', e.message); } }, 15 * 60 * 1000);
 
 function auth(req,res,next){const t=req.headers.authorization?.split(' ')[1];if(!t)return res.status(401).json({error:'Token necessário'});try{req.user=jwt.verify(t,JWT_SECRET);next();}catch{return res.status(401).json({error:'Token inválido'});}}
 function adminOnly(req,res,next){if(req.user.role!=='admin')return res.status(403).json({error:'Acesso restrito'});next();}
@@ -895,7 +927,8 @@ app.post('/api/automations', auth, adminOnly, async (req, res) => {
       id: c.id, name: c.name, type: c.type, field: c.field,
       scope: c.scope || 'task', parent_column_id: c.parent_column_id, task_id: c.task_id,
     }));
-    const rule = await parseAutomation({ description, columns });
+    const users = db.prepare('SELECT id, name FROM users').all();
+    const rule = await parseAutomation({ description, columns, users });
     const id = 'auto_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
     const displayName = (name && name.trim()) || description.slice(0, 60);
     const displayIcon = icon || '✨';
@@ -925,7 +958,7 @@ app.post('/api/automations/:id/run', auth, adminOnly, (req, res) => {
   const vErrors = validateRule(rule, columns);
   if (vErrors.length) return res.status(400).json({ error: `Regra inválida: ${vErrors.join('; ')}` });
 
-  const result = executeAutomation({ db, rule });
+  const result = executeAutomation({ db, rule, ruleId: req.params.id });
   const status = result.errors.length ? `erro: ${result.errors[0]}` : `ok (${result.applied})`;
   db.prepare('UPDATE automations SET last_run_at=CURRENT_TIMESTAMP, last_run_status=? WHERE id=?').run(status, req.params.id);
   if (result.errors.length) return res.status(400).json({ error: result.errors[0] });

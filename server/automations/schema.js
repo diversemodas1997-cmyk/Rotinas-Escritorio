@@ -4,13 +4,18 @@
 const OPERATIONS = ['sum', 'avg', 'count', 'min', 'max'];
 const DIRECTIONS = ['row', 'column'];
 const SCOPES = ['subitem', 'task'];
-const TYPES = ['aggregate'];
+const TYPES = ['aggregate', 'notify'];
+const NOTIFY_TRIGGERS = ['deadline_today', 'deadline_overdue'];
 
 function validateRule(rule, columnsCatalog) {
-  const errors = [];
   if (!rule || typeof rule !== 'object') return ['Regra vazia ou inválida'];
+  if (!TYPES.includes(rule.type)) return [`type deve ser um de: ${TYPES.join(', ')}`];
+  if (rule.type === 'notify') return validateNotifyRule(rule, columnsCatalog);
+  return validateAggregateRule(rule, columnsCatalog);
+}
 
-  if (!TYPES.includes(rule.type)) errors.push(`type deve ser um de: ${TYPES.join(', ')}`);
+function validateAggregateRule(rule, columnsCatalog) {
+  const errors = [];
   if (!OPERATIONS.includes(rule.operation)) errors.push(`operation deve ser um de: ${OPERATIONS.join(', ')}`);
   if (!DIRECTIONS.includes(rule.direction)) errors.push(`direction deve ser um de: ${DIRECTIONS.join(', ')}`);
   if (!SCOPES.includes(rule.scope)) errors.push(`scope deve ser um de: ${SCOPES.join(', ')}`);
@@ -31,8 +36,6 @@ function validateRule(rule, columnsCatalog) {
     errors.push('targetColumn não pode estar em sourceColumns');
   }
 
-  // coherence: direction=column implies scope of the children being aggregated
-  // we expect scope='subitem' when direction='column' (task aggregates its subitem children)
   if (rule.direction === 'column' && rule.scope !== 'subitem') {
     errors.push('direction=column requer scope=subitem (agrega filhos subitem em uma task pai)');
   }
@@ -49,7 +52,31 @@ function validateRule(rule, columnsCatalog) {
   return errors;
 }
 
+function validateNotifyRule(rule, columnsCatalog) {
+  const errors = [];
+  if (!NOTIFY_TRIGGERS.includes(rule.trigger)) errors.push(`trigger deve ser um de: ${NOTIFY_TRIGGERS.join(', ')}`);
+  if (!SCOPES.includes(rule.scope)) errors.push(`scope deve ser um de: ${SCOPES.join(', ')}`);
+  if (!rule.dateColumn || typeof rule.dateColumn !== 'string') errors.push('dateColumn obrigatório (id da coluna de data)');
+  if (!Array.isArray(rule.recipients) || rule.recipients.length === 0) errors.push('recipients deve ser array não-vazio com nomes de usuários');
+  if (!rule.message || typeof rule.message !== 'string' || rule.message.trim().length < 1) errors.push('message obrigatório');
+  if (rule.taskNamePattern !== undefined && rule.taskNamePattern !== null && typeof rule.taskNamePattern !== 'string') {
+    errors.push('taskNamePattern deve ser string ou null');
+  }
+
+  if (errors.length) return errors;
+
+  const byId = new Map(columnsCatalog.map(c => [c.id, c]));
+  const col = byId.get(rule.dateColumn);
+  if (!col) errors.push(`dateColumn "${rule.dateColumn}" não existe no quadro`);
+  else if (col.type !== 'date') errors.push(`dateColumn "${col.name}" deve ser do tipo date (tipo atual: ${col.type})`);
+
+  return errors;
+}
+
 function ruleJsonSchema() {
+  // Schema permissivo: campos específicos de cada tipo são opcionais aqui;
+  // o validador acima impõe os requisitos por type. Necessário porque o
+  // responseSchema do Gemini não suporta oneOf nativamente.
   return {
     type: 'object',
     properties: {
@@ -60,9 +87,14 @@ function ruleJsonSchema() {
       sourceColumns: { type: 'array', items: { type: 'string' } },
       targetColumn: { type: 'string' },
       taskId: { type: 'string' },
+      trigger: { type: 'string', enum: NOTIFY_TRIGGERS },
+      dateColumn: { type: 'string' },
+      taskNamePattern: { type: 'string' },
+      recipients: { type: 'array', items: { type: 'string' } },
+      message: { type: 'string' },
     },
-    required: ['type', 'operation', 'direction', 'scope', 'sourceColumns', 'targetColumn'],
+    required: ['type'],
   };
 }
 
-module.exports = { validateRule, ruleJsonSchema, OPERATIONS, DIRECTIONS, SCOPES, TYPES };
+module.exports = { validateRule, ruleJsonSchema, OPERATIONS, DIRECTIONS, SCOPES, TYPES, NOTIFY_TRIGGERS };

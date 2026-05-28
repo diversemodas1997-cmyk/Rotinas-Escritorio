@@ -146,7 +146,7 @@ async function callGemini(model, prompt) {
   throw friendly;
 }
 
-function buildPrompt(description, columns) {
+function buildPrompt(description, columns, users) {
   const catalog = columns.map(c => ({
     id: c.id,
     name: c.name,
@@ -155,12 +155,14 @@ function buildPrompt(description, columns) {
     parentColumnId: c.parent_column_id || c.parentColumnId || null,
     taskId: c.task_id || c.taskId || null,
   }));
+  const userNames = (users || []).map(u => u.name);
 
   return `Você é um compilador de automações para um quadro tipo Monday.com.
 Traduza a descrição do usuário (em português) para UMA regra JSON estruturada.
 
-Schema da regra:
-- type: "aggregate" (único tipo suportado hoje)
+Existem DOIS tipos de regra:
+
+TIPO 1 — "aggregate" (cálculo numérico)
 - operation: "sum" | "avg" | "count" | "min" | "max"
 - direction:
     - "row": para cada LINHA, agrega as colunas source da mesma linha e grava na coluna target da mesma linha
@@ -170,24 +172,43 @@ Schema da regra:
 - targetColumn: ID da coluna destino
 - taskId: null para aplicar a todas as tasks, ou um ID específico de task quando a coluna destino é uma subcoluna per-task
 
-Regras de resolução:
-1. Os nomes de colunas na descrição podem estar em maiúsculas/minúsculas diferentes — faça match case-insensitive.
-2. "pedidos" normalmente se refere a colunas de tipo number relacionadas a vendas/canais.
-3. "cada linha dos subitem" ou "cada subitem" → scope="subitem", direction="row".
+Regras p/ aggregate:
+1. Nomes de colunas case-insensitive.
+2. "pedidos" normalmente são colunas number de canais de venda.
+3. "cada linha dos subitem" / "cada subitem" → scope="subitem", direction="row".
 4. "para cada task somar os subitems" → scope="subitem", direction="column".
-5. Se a coluna destino for uma subcoluna (parentColumnId != null), e pertencer a uma task específica (taskId != null), defina o taskId na regra.
-6. Nunca inclua a targetColumn dentro de sourceColumns.
+5. Se targetColumn é subcoluna per-task (parentColumnId != null, taskId != null), preencha taskId.
+6. targetColumn nunca dentro de sourceColumns.
 
-Catálogo de colunas disponíveis:
+TIPO 2 — "notify" (notificação por data/prazo)
+- trigger: "deadline_today" (prazo é hoje) | "deadline_overdue" (prazo já passou)
+- scope: "subitem" (verificar prazo de subitems) | "task" (verificar prazo de tasks)
+- dateColumn: ID de uma coluna do catálogo com type="date"
+- taskNamePattern: string (opcional) — filtro case-insensitive no NOME da task; use quando o usuário mencionar tipo "tarefas com nome X" ou "tarefa DESCONTO"
+- recipients: array de NOMES de usuários do quadro (use os nomes exatos da lista abaixo, fazendo match case-insensitive a partir de "@nome" no texto)
+- message: a mensagem que será enviada (texto curto, ex.: "Atualizar promoções")
+
+Regras p/ notify:
+- "notificar @X" → recipient X (busque o nome real no catálogo de usuários)
+- "quando atingir a data de prazo" / "no prazo" → trigger="deadline_today"
+- "quando vencer" / "atrasado" → trigger="deadline_overdue"
+- "subitens de tarefas com nome Y" → scope="subitem", taskNamePattern="Y"
+- "tarefas com nome Y" (sem subitens) → scope="task", taskNamePattern="Y"
+- dateColumn: escolha a coluna do catálogo com type="date" mais relacionada ("Prazo", "Deadline" etc.) E com scope coerente com o scope da regra.
+
+Catálogo de colunas:
 ${JSON.stringify(catalog, null, 2)}
+
+Usuários disponíveis (nomes exatos):
+${JSON.stringify(userNames)}
 
 Descrição do usuário:
 """${description}"""
 
-Responda APENAS com o JSON da regra, sem texto adicional.`;
+Responda APENAS com o JSON da regra, sem texto adicional. Campos não usados para o tipo escolhido devem ser omitidos.`;
 }
 
-async function parseAutomation({ description, columns }) {
+async function parseAutomation({ description, columns, users }) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     throw new Error('GEMINI_API_KEY não configurada no servidor');
@@ -206,7 +227,7 @@ async function parseAutomation({ description, columns }) {
     },
   });
 
-  const prompt = buildPrompt(description, columns);
+  const prompt = buildPrompt(description, columns, users);
   let text;
   try {
     const result = await callGemini(model, prompt);
@@ -225,6 +246,16 @@ async function parseAutomation({ description, columns }) {
   }
 
   if (rule.taskId === '' || rule.taskId === undefined) rule.taskId = null;
+
+  if (rule.type === 'notify' && Array.isArray(rule.recipients) && users && users.length) {
+    const userByLower = new Map(users.map(u => [u.name.toLowerCase(), u.name]));
+    rule.recipients = rule.recipients
+      .map(r => userByLower.get(String(r).toLowerCase().replace(/^@/, '')) || r)
+      .filter(r => userByLower.has(r.toLowerCase()));
+    if (rule.recipients.length === 0) {
+      throw new Error('Nenhum dos usuários mencionados foi encontrado no quadro');
+    }
+  }
 
   const errors = validateRule(rule, columns);
   if (errors.length) {
