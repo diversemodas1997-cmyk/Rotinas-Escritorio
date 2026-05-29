@@ -919,23 +919,52 @@ function checkParseRate(userId) {
 }
 
 app.post('/api/automations', auth, adminOnly, async (req, res) => {
-  const { description, name, icon } = req.body;
-  if (!description || typeof description !== 'string') return res.status(400).json({ error: 'description obrigatório' });
-  if (!checkParseRate(req.user.id)) return res.status(429).json({ error: 'Limite diário de criação atingido (20/dia)' });
+  // Dois caminhos de criação:
+  //  1. "rule" estruturada (formato guiado no front) → validada direto, SEM Gemini.
+  //  2. "description" em texto livre → interpretada pelo Gemini (sujeita a cota/rate limit).
+  const { description, name, icon, rule: providedRule } = req.body;
+  const usingGuided = providedRule && typeof providedRule === 'object';
+
+  if (!usingGuided) {
+    if (!description || typeof description !== 'string') return res.status(400).json({ error: 'description obrigatório' });
+    if (!checkParseRate(req.user.id)) return res.status(429).json({ error: 'Limite diário de criação atingido (20/dia)' });
+  }
+
   try {
     const columns = db.prepare('SELECT * FROM columns_config').all().map(c => ({
       id: c.id, name: c.name, type: c.type, field: c.field,
       scope: c.scope || 'task', parent_column_id: c.parent_column_id, task_id: c.task_id,
     }));
     const users = db.prepare('SELECT id, name FROM users').all();
-    const rule = await parseAutomation({ description, columns, users });
+
+    let rule;
+    let naturalPrompt = (typeof description === 'string' && description.trim()) ? description.trim() : null;
+
+    if (usingGuided) {
+      rule = providedRule;
+      if (rule.taskId === '' || rule.taskId === undefined) rule.taskId = null;
+      // Normaliza nomes de destinatários para o nome exato cadastrado (igual ao parser).
+      if (rule.type === 'notify' && Array.isArray(rule.recipients) && users.length) {
+        const userByLower = new Map(users.map(u => [u.name.toLowerCase(), u.name]));
+        rule.recipients = rule.recipients
+          .map(r => userByLower.get(String(r).toLowerCase().replace(/^@/, '')) || r)
+          .filter(r => userByLower.has(r.toLowerCase()));
+        if (rule.recipients.length === 0) return res.status(400).json({ error: 'Selecione ao menos um destinatário válido' });
+      }
+      const errors = validateRule(rule, columns);
+      if (errors.length) return res.status(400).json({ error: `Regra inválida: ${errors.join('; ')}` });
+      if (!naturalPrompt) naturalPrompt = 'Automação (formato guiado)';
+    } else {
+      rule = await parseAutomation({ description, columns, users });
+    }
+
     const id = 'auto_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
-    const displayName = (name && name.trim()) || description.slice(0, 60);
-    const displayIcon = icon || '✨';
+    const displayName = (name && name.trim()) || (naturalPrompt || '').slice(0, 60) || 'Automação';
+    const displayIcon = icon || (usingGuided && rule.type === 'notify' ? '🔔' : '✨');
     db.prepare(`INSERT INTO automations (id, name, description, icon, active, rule_config, natural_prompt, created_by, built_in)
                 VALUES (?, ?, ?, ?, 1, ?, ?, ?, 0)`)
-      .run(id, displayName, `Automação personalizada`, displayIcon, JSON.stringify(rule), description, req.user.name);
-    res.json({ id, name: displayName, icon: displayIcon, active: true, builtIn: false, ruleConfig: rule, naturalPrompt: description, createdBy: req.user.name });
+      .run(id, displayName, `Automação personalizada`, displayIcon, JSON.stringify(rule), naturalPrompt, req.user.name);
+    res.json({ id, name: displayName, icon: displayIcon, active: true, builtIn: false, ruleConfig: rule, naturalPrompt, createdBy: req.user.name });
   } catch (e) {
     console.error('Automation parse error:', e.message);
     const msg = e.message || '';

@@ -1,8 +1,15 @@
 // Gemini-based parser: natural language description -> structured rule JSON.
 // Called ONCE at automation creation time, not at execution.
 
+const fs = require('fs');
+const path = require('path');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const { ruleJsonSchema, validateRule } = require('./schema');
+
+const DEBUG_LOG = path.join(__dirname, '..', 'parser-debug.log');
+function dlog(msg) {
+  try { fs.appendFileSync(DEBUG_LOG, `[${new Date().toISOString()}] ${msg}\n`); } catch {}
+}
 
 const MODEL = 'gemini-2.5-flash';
 
@@ -160,7 +167,24 @@ function buildPrompt(description, columns, users) {
   return `Você é um compilador de automações para um quadro tipo Monday.com.
 Traduza a descrição do usuário (em português) para UMA regra JSON estruturada.
 
-Existem DOIS tipos de regra:
+PRIMEIRO PASSO — escolha o "type":
+- Se a descrição fala em SOMAR / CALCULAR / MÉDIA / TOTAL / CONTAR números → type="aggregate"
+- Se a descrição fala em NOTIFICAR / AVISAR / ENVIAR MENSAGEM / @alguém / "quando atingir prazo" → type="notify"
+
+Em caso de dúvida, palavras como "notificar", "@", "mensagem", "prazo", "vencer", "atrasado" sempre indicam type="notify".
+
+EXEMPLOS:
+
+Entrada: "Soma dos pedidos em cada linha dos subitens, mostrar na coluna TOTAL"
+Saída: {"type":"aggregate","operation":"sum","direction":"row","scope":"subitem","sourceColumns":["col_ifood","col_rappi"],"targetColumn":"col_total"}
+
+Entrada: 'Notificar @camila "verificar estoque" quando atingir a data de prazo de subitens'
+Saída: {"type":"notify","trigger":"deadline_today","scope":"subitem","dateColumn":"col_deadline","recipients":["Camila"],"message":"verificar estoque"}
+
+Entrada: 'Avisar @ana e @pedro "atualizar promoções" no prazo dos subitens de tarefas com nome DESCONTO'
+Saída: {"type":"notify","trigger":"deadline_today","scope":"subitem","dateColumn":"col_deadline","taskNamePattern":"DESCONTO","recipients":["Ana","Pedro"],"message":"atualizar promoções"}
+
+DETALHES POR TIPO:
 
 TIPO 1 — "aggregate" (cálculo numérico)
 - operation: "sum" | "avg" | "count" | "min" | "max"
@@ -228,14 +252,18 @@ async function parseAutomation({ description, columns, users }) {
   });
 
   const prompt = buildPrompt(description, columns, users);
+  dlog(`>>> DESCRIPTION: ${description}`);
   let text;
   try {
     const result = await callGemini(model, prompt);
     text = result.response.text();
   } catch (e) {
+    dlog(`<<< GEMINI ERROR: ${e.message}`);
     console.error('[parser] Gemini API call failed:', e.stack || e.message);
     throw new Error(`Falha na chamada Gemini: ${e.message}`);
   }
+
+  dlog(`<<< RAW RESPONSE: ${text}`);
 
   let rule;
   try {

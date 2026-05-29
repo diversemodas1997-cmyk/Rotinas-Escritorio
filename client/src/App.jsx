@@ -1480,7 +1480,7 @@ function TimelineView({ tasks, search }) {
 }
 
 // ─── AI PANEL ────────────────────────────────────────────────────────────────
-function AIPanel({ tasks, automations, setAutomations, canManageAutomations, columns, users, onDataChanged }) {
+function AIPanel({ tasks, automations, setAutomations, canManageAutomations, columns, subColumns, users, onDataChanged }) {
   const [activeTab, setActiveTab] = useState("analysis");
   const [loading, setLoading] = useState(false);
   const [analysis, setAnalysis] = useState(null);
@@ -1488,12 +1488,36 @@ function AIPanel({ tasks, automations, setAutomations, canManageAutomations, col
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
   const [showCreateAuto, setShowCreateAuto] = useState(false);
+  const [autoMode, setAutoMode] = useState("guided"); // "guided" (formato pré-definido) | "free" (texto + IA)
   const [autoDesc, setAutoDesc] = useState("");
   const [autoName, setAutoName] = useState("");
   const [autoParsing, setAutoParsing] = useState(false);
   const [autoError, setAutoError] = useState("");
   const [runningId, setRunningId] = useState(null);
   const [runToast, setRunToast] = useState(null);
+
+  // ─── Formato guiado (notify): "Quando [tarefa/subitem] atingir [prazo] → notificar [mensagem] [pessoa]"
+  const dateColumns = useMemo(() => {
+    const all = [...(columns || []), ...(subColumns || [])].filter(c => c.type === "date");
+    const seen = new Set();
+    return all.filter(c => (seen.has(c.id) ? false : (seen.add(c.id), true)));
+  }, [columns, subColumns]);
+  const [gScope, setGScope] = useState("subitem");
+  const [gTrigger, setGTrigger] = useState("deadline_today");
+  const [gDateCol, setGDateCol] = useState("");
+  const [gTaskPattern, setGTaskPattern] = useState("");
+  const [gMessage, setGMessage] = useState("");
+  const [gRecipients, setGRecipients] = useState([]);
+
+  const openCreateAuto = () => {
+    setShowCreateAuto(true); setAutoError(""); setAutoMode("guided");
+    setGScope("subitem"); setGTrigger("deadline_today");
+    setGDateCol(dateColumns.find(c => c.field === "deadline")?.id || dateColumns[0]?.id || "");
+    setGTaskPattern(""); setGMessage(""); setGRecipients([]);
+    setAutoDesc(""); setAutoName("");
+  };
+  const toggleRecipient = (name) =>
+    setGRecipients(prev => prev.includes(name) ? prev.filter(n => n !== name) : [...prev, name]);
 
   const rawFetch = async (path, opts) => {
     const token = localStorage.getItem("rotina_token");
@@ -1504,10 +1528,33 @@ function AIPanel({ tasks, automations, setAutomations, canManageAutomations, col
   };
 
   const createAutomation = async () => {
-    if (!autoDesc.trim()) { setAutoError("Descreva a automação"); return; }
+    let body;
+    if (autoMode === "guided") {
+      if (!gDateCol) { setAutoError("Selecione a coluna de prazo (data)"); return; }
+      if (!gMessage.trim()) { setAutoError("Escreva a mensagem da notificação"); return; }
+      if (gRecipients.length === 0) { setAutoError("Selecione ao menos uma pessoa para notificar"); return; }
+      const rule = {
+        type: "notify",
+        trigger: gTrigger,
+        scope: gScope,
+        dateColumn: gDateCol,
+        recipients: gRecipients,
+        message: gMessage.trim(),
+      };
+      if (gTaskPattern.trim()) rule.taskNamePattern = gTaskPattern.trim();
+      const dateColName = dateColumns.find(c => c.id === gDateCol)?.name || gDateCol;
+      const scopeLabel = gScope === "subitem" ? "subitem" : "tarefa";
+      const triggerLabel = gTrigger === "deadline_today" ? "atingir o prazo (hoje)" : "estiver com o prazo vencido";
+      const patternLabel = gTaskPattern.trim() ? ` (em tarefas com nome "${gTaskPattern.trim()}")` : "";
+      const description = `Quando ${scopeLabel}${patternLabel} ${triggerLabel} em "${dateColName}", notificar ${gRecipients.join(", ")}: "${gMessage.trim()}"`;
+      body = { rule, description, name: autoName.trim() || undefined };
+    } else {
+      if (!autoDesc.trim()) { setAutoError("Descreva a automação"); return; }
+      body = { description: autoDesc.trim(), name: autoName.trim() || undefined };
+    }
     setAutoParsing(true); setAutoError("");
     try {
-      const result = await rawFetch("/automations", { method: "POST", body: JSON.stringify({ description: autoDesc.trim(), name: autoName.trim() || undefined }) });
+      const result = await rawFetch("/automations", { method: "POST", body: JSON.stringify(body) });
       setAutomations(prev => [...prev, result]);
       setShowCreateAuto(false); setAutoDesc(""); setAutoName("");
     } catch (e) {
@@ -1776,7 +1823,7 @@ function AIPanel({ tasks, automations, setAutomations, canManageAutomations, col
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
             <div style={{ fontWeight: 700, fontSize: 13 }}>⚡ Automações IA</div>
             {canManageAutomations && (
-              <button onClick={() => { setShowCreateAuto(true); setAutoError(""); }} style={{ background: "linear-gradient(135deg, #6c5ce7, #a55eea)", color: "#fff", border: "none", borderRadius: 6, padding: "5px 10px", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>+ Nova</button>
+              <button onClick={openCreateAuto} style={{ background: "linear-gradient(135deg, #6c5ce7, #a55eea)", color: "#fff", border: "none", borderRadius: 6, padding: "5px 10px", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>+ Nova</button>
             )}
           </div>
 
@@ -1820,16 +1867,90 @@ function AIPanel({ tasks, automations, setAutomations, canManageAutomations, col
           {showCreateAuto && (
             <div onClick={() => !autoParsing && setShowCreateAuto(false)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}>
               <div onClick={e => e.stopPropagation()} style={{ background: "#1a1d23", border: "1px solid #2a2d35", borderRadius: 12, padding: 20, width: 480, maxWidth: "90vw" }}>
-                <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4 }}>✨ Nova automação personalizada</div>
-                <div style={{ fontSize: 11, color: "#778ca3", marginBottom: 14 }}>Descreva em português o que a automação deve fazer. A IA vai interpretar e criar uma regra executável.</div>
-                <input value={autoName} onChange={e => setAutoName(e.target.value)} placeholder="Nome (opcional)" style={{ width: "100%", padding: "8px 10px", borderRadius: 7, border: "1px solid #333", background: "#13151a", color: "#e8eaed", fontSize: 12, marginBottom: 8, boxSizing: "border-box" }} />
-                <textarea value={autoDesc} onChange={e => setAutoDesc(e.target.value)} placeholder={'Exemplos:\n• "Soma dos números das colunas de pedidos em cada linha dos subitem, mostrando o total na coluna TOTAL POR CANAL DE VENDA"\n• "Notificar @camila e @gabriela \'Atualizar promoções\' quando atingir a data de prazo de subitens de tarefas com nome DESCONTO"'} rows={6} style={{ width: "100%", padding: "8px 10px", borderRadius: 7, border: "1px solid #333", background: "#13151a", color: "#e8eaed", fontSize: 12, resize: "vertical", boxSizing: "border-box", fontFamily: "inherit" }} />
+                <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 10 }}>✨ Nova automação</div>
+
+                {/* Seletor de modo */}
+                <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
+                  {[{ k: "guided", l: "📋 Formato guiado" }, { k: "free", l: "💬 Descrição livre (IA)" }].map(m => (
+                    <button key={m.k} onClick={() => { setAutoMode(m.k); setAutoError(""); }} style={{ flex: 1, padding: "7px 8px", borderRadius: 7, border: `1px solid ${autoMode === m.k ? "#6c5ce7" : "#333"}`, background: autoMode === m.k ? "#6c5ce722" : "#13151a", color: autoMode === m.k ? "#cbb9ff" : "#778ca3", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>{m.l}</button>
+                  ))}
+                </div>
+
+                <input value={autoName} onChange={e => setAutoName(e.target.value)} placeholder="Nome (opcional)" style={{ width: "100%", padding: "8px 10px", borderRadius: 7, border: "1px solid #333", background: "#13151a", color: "#e8eaed", fontSize: 12, marginBottom: 12, boxSizing: "border-box" }} />
+
+                {autoMode === "guided" ? (() => {
+                  const fieldStyle = { width: "100%", padding: "8px 10px", borderRadius: 7, border: "1px solid #333", background: "#13151a", color: "#e8eaed", fontSize: 12, boxSizing: "border-box" };
+                  const labelStyle = { fontSize: 11, fontWeight: 700, color: "#a55eea", marginBottom: 5, display: "block" };
+                  const rowStyle = { marginBottom: 12 };
+                  return (
+                    <div>
+                      <div style={{ fontSize: 11, color: "#778ca3", marginBottom: 14, lineHeight: 1.5 }}>
+                        <b>Quando</b> uma tarefa/subitem <b>atingir o prazo</b>, <b>notificar</b> uma mensagem para as pessoas escolhidas — no campo de mensagens do item.
+                      </div>
+
+                      <div style={rowStyle}>
+                        <label style={labelStyle}>1. Quando o quê?</label>
+                        <select value={gScope} onChange={e => setGScope(e.target.value)} style={fieldStyle}>
+                          <option value="subitem">Subitens</option>
+                          <option value="task">Tarefas</option>
+                        </select>
+                      </div>
+
+                      <div style={rowStyle}>
+                        <label style={labelStyle}>2. Atingir qual prazo?</label>
+                        <select value={gTrigger} onChange={e => setGTrigger(e.target.value)} style={{ ...fieldStyle, marginBottom: 6 }}>
+                          <option value="deadline_today">Prazo é hoje</option>
+                          <option value="deadline_overdue">Prazo já venceu (atrasado)</option>
+                        </select>
+                        {dateColumns.length === 0 ? (
+                          <div style={{ fontSize: 11, color: "#e2445c" }}>Nenhuma coluna de data encontrada. Crie uma coluna do tipo "data" no quadro.</div>
+                        ) : (
+                          <select value={gDateCol} onChange={e => setGDateCol(e.target.value)} style={fieldStyle}>
+                            {dateColumns.map(c => <option key={c.id} value={c.id}>Coluna de data: {c.name}</option>)}
+                          </select>
+                        )}
+                      </div>
+
+                      <div style={rowStyle}>
+                        <label style={labelStyle}>3. Notificar qual mensagem?</label>
+                        <textarea value={gMessage} onChange={e => setGMessage(e.target.value)} placeholder='Ex.: "Atualizar promoções"' rows={2} style={{ ...fieldStyle, resize: "vertical", fontFamily: "inherit" }} />
+                      </div>
+
+                      <div style={rowStyle}>
+                        <label style={labelStyle}>4. Para quais pessoas?</label>
+                        {(!users || users.length === 0) ? (
+                          <div style={{ fontSize: 11, color: "#778ca3" }}>Nenhum usuário cadastrado.</div>
+                        ) : (
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                            {users.map(u => {
+                              const on = gRecipients.includes(u.name);
+                              return (
+                                <button key={u.id || u.name} onClick={() => toggleRecipient(u.name)} style={{ padding: "5px 10px", borderRadius: 14, border: `1px solid ${on ? "#00c875" : "#333"}`, background: on ? "#00c87522" : "#13151a", color: on ? "#00c875" : "#aab", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>
+                                  {on ? "✓ " : ""}{u.name}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+
+                      <div style={rowStyle}>
+                        <label style={labelStyle}>5. (Opcional) Só em tarefas cujo nome contenha:</label>
+                        <input value={gTaskPattern} onChange={e => setGTaskPattern(e.target.value)} placeholder="Ex.: DESCONTO (deixe vazio p/ todas)" style={fieldStyle} />
+                      </div>
+                    </div>
+                  );
+                })() : (
+                  <textarea value={autoDesc} onChange={e => setAutoDesc(e.target.value)} placeholder={'Exemplos:\n• "Soma dos números das colunas de pedidos em cada linha dos subitem, mostrando o total na coluna TOTAL POR CANAL DE VENDA"\n• "Notificar @camila e @gabriela \'Atualizar promoções\' quando atingir a data de prazo de subitens de tarefas com nome DESCONTO"'} rows={6} style={{ width: "100%", padding: "8px 10px", borderRadius: 7, border: "1px solid #333", background: "#13151a", color: "#e8eaed", fontSize: 12, resize: "vertical", boxSizing: "border-box", fontFamily: "inherit" }} />
+                )}
                 {autoError && <div style={{ marginTop: 10, padding: 8, background: "#2a1a1a", border: "1px solid #4a2020", borderRadius: 6, color: "#e2445c", fontSize: 11 }}>❌ {autoError}</div>}
                 <div style={{ display: "flex", gap: 8, justifyContent: "space-between", alignItems: "center", marginTop: 14 }}>
-                  <button onClick={testGemini} disabled={autoParsing} title="Verifica se a API Gemini está configurada e respondendo" style={{ background: "transparent", color: "#579bfc", border: "1px solid #1a3a5e", borderRadius: 7, padding: "7px 10px", fontSize: 11, cursor: "pointer" }}>🔌 Testar Gemini</button>
+                  {autoMode === "free" ? (
+                    <button onClick={testGemini} disabled={autoParsing} title="Verifica se a API Gemini está configurada e respondendo" style={{ background: "transparent", color: "#579bfc", border: "1px solid #1a3a5e", borderRadius: 7, padding: "7px 10px", fontSize: 11, cursor: "pointer" }}>🔌 Testar Gemini</button>
+                  ) : <span />}
                   <div style={{ display: "flex", gap: 8 }}>
                     <button onClick={() => setShowCreateAuto(false)} disabled={autoParsing} style={{ background: "transparent", color: "#778ca3", border: "1px solid #333", borderRadius: 7, padding: "7px 14px", fontSize: 12, cursor: "pointer" }}>Cancelar</button>
-                    <button onClick={createAutomation} disabled={autoParsing} style={{ background: autoParsing ? "#444" : "linear-gradient(135deg, #6c5ce7, #a55eea)", color: "#fff", border: "none", borderRadius: 7, padding: "7px 14px", fontSize: 12, fontWeight: 700, cursor: autoParsing ? "wait" : "pointer" }}>{autoParsing ? "⏳ Interpretando..." : "Criar"}</button>
+                    <button onClick={createAutomation} disabled={autoParsing} style={{ background: autoParsing ? "#444" : "linear-gradient(135deg, #6c5ce7, #a55eea)", color: "#fff", border: "none", borderRadius: 7, padding: "7px 14px", fontSize: 12, fontWeight: 700, cursor: autoParsing ? "wait" : "pointer" }}>{autoParsing ? (autoMode === "guided" ? "⏳ Criando..." : "⏳ Interpretando...") : "Criar"}</button>
                   </div>
                 </div>
               </div>
@@ -4153,7 +4274,7 @@ function Dashboard({ currentUser, onLogout }) {
         {showAI && (
           <div style={{ width: 320, background: "#1a1d23", borderLeft: "1px solid #2a2d35", overflow: "auto", padding: 12, flexShrink: 0, animation: "slideIn .2s ease" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}><span style={{ fontWeight: 700, fontSize: 14 }}>🤖 Assistente IA</span><button onClick={() => setShowAI(false)} style={{ background: "none", border: "none", color: "#778ca3", fontSize: 18, cursor: "pointer" }}>×</button></div>
-            <AIPanel tasks={tasks} automations={automations} setAutomations={(arg) => {
+            <AIPanel tasks={tasks} columns={columns} subColumns={subColumns} users={users} automations={automations} setAutomations={(arg) => {
               const next = typeof arg === "function" ? arg(automations) : arg;
               setAutomations(next);
               const changed = next.find((a, i) => automations[i] && a.active !== automations[i].active && a.id === automations[i].id);
