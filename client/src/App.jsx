@@ -1497,18 +1497,6 @@ function AIPanel({ tasks, automations, setAutomations, canManageAutomations, col
   const [runToast, setRunToast] = useState(null);
 
   // ─── Formato guiado (notify): "Quando [tarefa/subitem] atingir [data] → notificar [mensagem] [pessoa]"
-  // Lista de alvos (tarefas + subitens reais do quadro) para o 1º dropdown.
-  const targetOptions = useMemo(() => {
-    const opts = [];
-    for (const t of (tasks || [])) {
-      opts.push({ value: `task:${t.id}`, label: t.name || "(tarefa sem nome)", group: "Tarefas" });
-      for (const s of (t.subitems || [])) {
-        opts.push({ value: `subitem:${s.id}`, label: `${t.name || "?"} › ${s.name || "(subitem)"}`, group: "Subitens" });
-      }
-    }
-    return opts;
-  }, [tasks]);
-
   // Datas/prazos já estabelecidos em tarefas/subitens (deadline + colunas de data), para o 2º dropdown.
   const knownDates = useMemo(() => {
     const set = new Set();
@@ -1525,19 +1513,24 @@ function AIPanel({ tasks, automations, setAutomations, canManageAutomations, col
     return [...set].sort();
   }, [tasks, columns, subColumns]);
 
-  const [gTarget, setGTarget] = useState("");
-  const [gDateSel, setGDateSel] = useState("");   // uma data conhecida, ou "__custom__"
+  const [gTaskId, setGTaskId] = useState("");
+  const [gSubId, setGSubId] = useState("");        // "" = a tarefa em si; senão id do subitem
+  const [gDateSel, setGDateSel] = useState("");    // uma data conhecida, ou "__custom__"
   const [gCustomDate, setGCustomDate] = useState("");
   const [gMessage, setGMessage] = useState("");
   const [gRecipients, setGRecipients] = useState([]);
 
+  const selectedTask = (tasks || []).find(t => t.id === gTaskId) || null;
+  const subitemsOfTask = selectedTask?.subitems || [];
+
   const openCreateAuto = () => {
     setShowCreateAuto(true); setAutoError(""); setAutoMode("guided");
-    setGTarget(targetOptions[0]?.value || "");
+    setGTaskId((tasks || [])[0]?.id || ""); setGSubId("");
     setGDateSel(""); setGCustomDate("");
     setGMessage(""); setGRecipients([]);
     setAutoDesc(""); setAutoName("");
   };
+  const onPickTask = (taskId) => { setGTaskId(taskId); setGSubId(""); };  // troca de tarefa zera o subitem
   const toggleRecipient = (name) =>
     setGRecipients(prev => prev.includes(name) ? prev.filter(n => n !== name) : [...prev, name]);
 
@@ -1552,12 +1545,13 @@ function AIPanel({ tasks, automations, setAutomations, canManageAutomations, col
   const createAutomation = async () => {
     let body;
     if (autoMode === "guided") {
-      if (!gTarget) { setAutoError("Selecione a tarefa ou subitem"); return; }
+      if (!gTaskId) { setAutoError("Selecione a tarefa"); return; }
       const date = gDateSel === "__custom__" ? gCustomDate : gDateSel;
       if (!date) { setAutoError("Selecione a data (prazo) ou escolha uma data personalizada"); return; }
       if (!gMessage.trim()) { setAutoError("Escreva a mensagem da notificação"); return; }
       if (gRecipients.length === 0) { setAutoError("Selecione ao menos uma pessoa para notificar"); return; }
-      const [targetType, targetId] = gTarget.split(":");
+      const targetType = gSubId ? "subitem" : "task";
+      const targetId = gSubId || gTaskId;
       const rule = {
         type: "notify",
         mode: "specific",
@@ -1567,9 +1561,10 @@ function AIPanel({ tasks, automations, setAutomations, canManageAutomations, col
         recipients: gRecipients,
         message: gMessage.trim(),
       };
-      const targetLabel = targetOptions.find(o => o.value === gTarget)?.label || gTarget;
+      const subName = subitemsOfTask.find(s => s.id === gSubId)?.name;
+      const targetLabel = gSubId ? `${selectedTask?.name || "?"} › ${subName || "?"}` : (selectedTask?.name || "?");
       const typeLabel = targetType === "task" ? "tarefa" : "subitem";
-      const description = `Quando a ${typeLabel} "${targetLabel}" atingir ${formatDate(date)}, notificar ${gRecipients.join(", ")}: "${gMessage.trim()}"`;
+      const description = `Quando a/o ${typeLabel} "${targetLabel}" atingir ${formatDate(date)}, notificar ${gRecipients.join(", ")}: "${gMessage.trim()}"`;
       body = { rule, description, name: autoName.trim() || undefined };
     } else {
       if (!autoDesc.trim()) { setAutoError("Descreva a automação"); return; }
@@ -1912,19 +1907,18 @@ function AIPanel({ tasks, automations, setAutomations, canManageAutomations, col
                       </div>
 
                       <div style={rowStyle}>
-                        <label style={labelStyle}>1. Quando (qual tarefa/subitem)?</label>
-                        {targetOptions.length === 0 ? (
+                        <label style={labelStyle}>1. Quando (qual tarefa)?</label>
+                        {(tasks || []).length === 0 ? (
                           <div style={{ fontSize: 11, color: "#e2445c" }}>Nenhuma tarefa cadastrada no quadro.</div>
                         ) : (
-                          <select value={gTarget} onChange={e => setGTarget(e.target.value)} style={fieldStyle}>
-                            <optgroup label="Tarefas">
-                              {targetOptions.filter(o => o.group === "Tarefas").map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-                            </optgroup>
-                            <optgroup label="Subitens">
-                              {targetOptions.filter(o => o.group === "Subitens").map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-                            </optgroup>
+                          <select value={gTaskId} onChange={e => onPickTask(e.target.value)} style={{ ...fieldStyle, marginBottom: 6 }}>
+                            {(tasks || []).map(t => <option key={t.id} value={t.id}>{t.name || "(tarefa sem nome)"}</option>)}
                           </select>
                         )}
+                        <select value={gSubId} onChange={e => setGSubId(e.target.value)} style={fieldStyle} disabled={!gTaskId}>
+                          <option value="">A tarefa inteira</option>
+                          {subitemsOfTask.map(s => <option key={s.id} value={s.id}>Subitem: {s.name || "(sem nome)"}</option>)}
+                        </select>
                       </div>
 
                       <div style={rowStyle}>
