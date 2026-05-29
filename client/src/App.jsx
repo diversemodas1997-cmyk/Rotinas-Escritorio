@@ -1523,6 +1523,14 @@ function AIPanel({ tasks, automations, setAutomations, canManageAutomations, col
   const selectedTask = (tasks || []).find(t => t.id === gTaskId) || null;
   const subitemsOfTask = selectedTask?.subitems || [];
 
+  // Cada item tem uma única data (o prazo): ao escolher tarefa/subitem, preenche a data automaticamente.
+  useEffect(() => {
+    if (!showCreateAuto || autoMode !== "guided") return;
+    const item = gSubId ? subitemsOfTask.find(s => s.id === gSubId) : selectedTask;
+    setGDateSel(item?.deadline || "");
+    if (!item?.deadline) setGCustomDate("");
+  }, [gTaskId, gSubId, showCreateAuto, autoMode]);
+
   const openCreateAuto = () => {
     setShowCreateAuto(true); setAutoError(""); setAutoMode("guided");
     setGTaskId((tasks || [])[0]?.id || ""); setGSubId("");
@@ -1931,6 +1939,12 @@ function AIPanel({ tasks, automations, setAutomations, canManageAutomations, col
                         {gDateSel === "__custom__" && (
                           <input type="date" value={gCustomDate} onChange={e => setGCustomDate(e.target.value)} style={fieldStyle} />
                         )}
+                        {(() => {
+                          const dl = (gSubId ? subitemsOfTask.find(s => s.id === gSubId) : selectedTask)?.deadline;
+                          return dl
+                            ? <div style={{ fontSize: 10, color: "#00c875", marginTop: 4 }}>✓ Preenchido com o prazo do item ({formatDate(dl)}). Você pode alterar.</div>
+                            : <div style={{ fontSize: 10, color: "#778ca3", marginTop: 4 }}>Este item não tem prazo definido — escolha uma data.</div>;
+                        })()}
                       </div>
 
                       <div style={rowStyle}>
