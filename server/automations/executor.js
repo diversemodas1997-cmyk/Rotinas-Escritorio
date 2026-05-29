@@ -158,6 +158,8 @@ function executeAggregate({ db, rule, columns }) {
 }
 
 function executeNotify({ db, rule, ruleId, columns }) {
+  if (rule.mode === 'specific') return executeNotifySpecific({ db, rule, ruleId });
+
   const byId = new Map(columns.map(c => [c.id, c]));
   const dateCol = byId.get(rule.dateColumn);
   if (!dateCol) return { applied: 0, summary: '', errors: [`dateColumn ${rule.dateColumn} não encontrada`] };
@@ -222,6 +224,37 @@ function executeNotify({ db, rule, ruleId, columns }) {
     ? `Nenhuma ${rule.scope === 'subitem' ? 'subtarefa' : 'tarefa'} elegível (ou já notificada hoje)`
     : `${applied} notificação(ões) enviada(s) para ${rule.recipients.join(', ')}`;
   return { applied, summary, errors: [] };
+}
+
+// Notificação para um alvo específico (tarefa/subitem) ao atingir uma data absoluta.
+// Dispara quando hoje >= rule.date, uma única vez (idempotência por date_key=rule.date).
+function executeNotifySpecific({ db, rule, ruleId }) {
+  const today = brtDateString();
+  if (today < rule.date) {
+    return { applied: 0, summary: `Aguardando ${rule.date} (hoje: ${today})`, errors: [] };
+  }
+
+  const targetType = rule.targetType;
+  const target = targetType === 'task'
+    ? db.prepare('SELECT id, name FROM tasks WHERE id=?').get(rule.targetId)
+    : db.prepare('SELECT id, name FROM subitems WHERE id=?').get(rule.targetId);
+  if (!target) {
+    return { applied: 0, summary: '', errors: [`${targetType === 'task' ? 'Tarefa' : 'Subitem'} alvo não existe mais`] };
+  }
+
+  const insertLog = db.prepare(`INSERT OR IGNORE INTO notification_log (rule_id, target_type, target_id, date_key)
+                                VALUES (?, ?, ?, ?)`);
+  const logResult = insertLog.run(ruleId || 'unknown', targetType, rule.targetId, rule.date);
+  if (logResult.changes === 0) {
+    return { applied: 0, summary: 'Notificação já enviada anteriormente', errors: [] };
+  }
+
+  const updateId = 'upd_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+  db.prepare(`INSERT INTO updates (id, target_type, target_id, author, text, mentions, files)
+              VALUES (?, ?, ?, ?, ?, ?, '[]')`)
+    .run(updateId, targetType, rule.targetId, '🤖 Automação', rule.message, JSON.stringify(rule.recipients));
+
+  return { applied: 1, summary: `Notificação enviada em "${target.name}" para ${rule.recipients.join(', ')}`, errors: [] };
 }
 
 module.exports = { execute };

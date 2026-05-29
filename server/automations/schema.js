@@ -53,6 +53,8 @@ function validateAggregateRule(rule, columnsCatalog) {
 }
 
 function validateNotifyRule(rule, columnsCatalog) {
+  // Variante "specific": alvo (tarefa/subitem) + data absoluta, criada pelo formato guiado.
+  if (rule.mode === 'specific') return validateNotifySpecificRule(rule);
   const errors = [];
   if (!NOTIFY_TRIGGERS.includes(rule.trigger)) errors.push(`trigger deve ser um de: ${NOTIFY_TRIGGERS.join(', ')}`);
   if (!SCOPES.includes(rule.scope)) errors.push(`scope deve ser um de: ${SCOPES.join(', ')}`);
@@ -70,6 +72,16 @@ function validateNotifyRule(rule, columnsCatalog) {
   if (!col) errors.push(`dateColumn "${rule.dateColumn}" não existe no quadro`);
   else if (col.type !== 'date') errors.push(`dateColumn "${col.name}" deve ser do tipo date (tipo atual: ${col.type})`);
 
+  return errors;
+}
+
+function validateNotifySpecificRule(rule) {
+  const errors = [];
+  if (!SCOPES.includes(rule.targetType)) errors.push(`targetType deve ser um de: ${SCOPES.join(', ')}`);
+  if (!rule.targetId || typeof rule.targetId !== 'string') errors.push('targetId obrigatório (id da tarefa/subitem)');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(rule.date || '')) errors.push('date deve estar no formato YYYY-MM-DD');
+  if (!Array.isArray(rule.recipients) || rule.recipients.length === 0) errors.push('recipients deve ser array não-vazio com nomes de usuários');
+  if (!rule.message || typeof rule.message !== 'string' || rule.message.trim().length < 1) errors.push('message obrigatório');
   return errors;
 }
 

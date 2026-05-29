@@ -1496,24 +1496,46 @@ function AIPanel({ tasks, automations, setAutomations, canManageAutomations, col
   const [runningId, setRunningId] = useState(null);
   const [runToast, setRunToast] = useState(null);
 
-  // ─── Formato guiado (notify): "Quando [tarefa/subitem] atingir [prazo] → notificar [mensagem] [pessoa]"
-  const dateColumns = useMemo(() => {
-    const all = [...(columns || []), ...(subColumns || [])].filter(c => c.type === "date");
-    const seen = new Set();
-    return all.filter(c => (seen.has(c.id) ? false : (seen.add(c.id), true)));
-  }, [columns, subColumns]);
-  const [gScope, setGScope] = useState("subitem");
-  const [gTrigger, setGTrigger] = useState("deadline_today");
-  const [gDateCol, setGDateCol] = useState("");
-  const [gTaskPattern, setGTaskPattern] = useState("");
+  // ─── Formato guiado (notify): "Quando [tarefa/subitem] atingir [data] → notificar [mensagem] [pessoa]"
+  // Lista de alvos (tarefas + subitens reais do quadro) para o 1º dropdown.
+  const targetOptions = useMemo(() => {
+    const opts = [];
+    for (const t of (tasks || [])) {
+      opts.push({ value: `task:${t.id}`, label: t.name || "(tarefa sem nome)", group: "Tarefas" });
+      for (const s of (t.subitems || [])) {
+        opts.push({ value: `subitem:${s.id}`, label: `${t.name || "?"} › ${s.name || "(subitem)"}`, group: "Subitens" });
+      }
+    }
+    return opts;
+  }, [tasks]);
+
+  // Datas/prazos já estabelecidos em tarefas/subitens (deadline + colunas de data), para o 2º dropdown.
+  const knownDates = useMemo(() => {
+    const set = new Set();
+    const dateCols = (columns || []).filter(c => c.type === "date");
+    const subDateCols = (subColumns || []).filter(c => c.type === "date");
+    for (const t of (tasks || [])) {
+      if (t.deadline) set.add(t.deadline);
+      for (const c of dateCols) { const v = (t.custom || {})[c.id]; if (v) set.add(v); }
+      for (const s of (t.subitems || [])) {
+        if (s.deadline) set.add(s.deadline);
+        for (const c of subDateCols) { const v = (s.custom || {})[c.id]; if (v) set.add(v); }
+      }
+    }
+    return [...set].sort();
+  }, [tasks, columns, subColumns]);
+
+  const [gTarget, setGTarget] = useState("");
+  const [gDateSel, setGDateSel] = useState("");   // uma data conhecida, ou "__custom__"
+  const [gCustomDate, setGCustomDate] = useState("");
   const [gMessage, setGMessage] = useState("");
   const [gRecipients, setGRecipients] = useState([]);
 
   const openCreateAuto = () => {
     setShowCreateAuto(true); setAutoError(""); setAutoMode("guided");
-    setGScope("subitem"); setGTrigger("deadline_today");
-    setGDateCol(dateColumns.find(c => c.field === "deadline")?.id || dateColumns[0]?.id || "");
-    setGTaskPattern(""); setGMessage(""); setGRecipients([]);
+    setGTarget(targetOptions[0]?.value || "");
+    setGDateSel(""); setGCustomDate("");
+    setGMessage(""); setGRecipients([]);
     setAutoDesc(""); setAutoName("");
   };
   const toggleRecipient = (name) =>
@@ -1530,23 +1552,24 @@ function AIPanel({ tasks, automations, setAutomations, canManageAutomations, col
   const createAutomation = async () => {
     let body;
     if (autoMode === "guided") {
-      if (!gDateCol) { setAutoError("Selecione a coluna de prazo (data)"); return; }
+      if (!gTarget) { setAutoError("Selecione a tarefa ou subitem"); return; }
+      const date = gDateSel === "__custom__" ? gCustomDate : gDateSel;
+      if (!date) { setAutoError("Selecione a data (prazo) ou escolha uma data personalizada"); return; }
       if (!gMessage.trim()) { setAutoError("Escreva a mensagem da notificação"); return; }
       if (gRecipients.length === 0) { setAutoError("Selecione ao menos uma pessoa para notificar"); return; }
+      const [targetType, targetId] = gTarget.split(":");
       const rule = {
         type: "notify",
-        trigger: gTrigger,
-        scope: gScope,
-        dateColumn: gDateCol,
+        mode: "specific",
+        targetType,
+        targetId,
+        date,
         recipients: gRecipients,
         message: gMessage.trim(),
       };
-      if (gTaskPattern.trim()) rule.taskNamePattern = gTaskPattern.trim();
-      const dateColName = dateColumns.find(c => c.id === gDateCol)?.name || gDateCol;
-      const scopeLabel = gScope === "subitem" ? "subitem" : "tarefa";
-      const triggerLabel = gTrigger === "deadline_today" ? "atingir o prazo (hoje)" : "estiver com o prazo vencido";
-      const patternLabel = gTaskPattern.trim() ? ` (em tarefas com nome "${gTaskPattern.trim()}")` : "";
-      const description = `Quando ${scopeLabel}${patternLabel} ${triggerLabel} em "${dateColName}", notificar ${gRecipients.join(", ")}: "${gMessage.trim()}"`;
+      const targetLabel = targetOptions.find(o => o.value === gTarget)?.label || gTarget;
+      const typeLabel = targetType === "task" ? "tarefa" : "subitem";
+      const description = `Quando a ${typeLabel} "${targetLabel}" atingir ${formatDate(date)}, notificar ${gRecipients.join(", ")}: "${gMessage.trim()}"`;
       body = { rule, description, name: autoName.trim() || undefined };
     } else {
       if (!autoDesc.trim()) { setAutoError("Descreva a automação"); return; }
@@ -1885,29 +1908,34 @@ function AIPanel({ tasks, automations, setAutomations, canManageAutomations, col
                   return (
                     <div>
                       <div style={{ fontSize: 11, color: "#778ca3", marginBottom: 14, lineHeight: 1.5 }}>
-                        <b>Quando</b> uma tarefa/subitem <b>atingir o prazo</b>, <b>notificar</b> uma mensagem para as pessoas escolhidas — no campo de mensagens do item.
+                        <b>Quando</b> a tarefa/subitem escolhida <b>atingir a data</b>, <b>notificar</b> a mensagem para as pessoas — no campo de mensagens do item.
                       </div>
 
                       <div style={rowStyle}>
-                        <label style={labelStyle}>1. Quando o quê?</label>
-                        <select value={gScope} onChange={e => setGScope(e.target.value)} style={fieldStyle}>
-                          <option value="subitem">Subitens</option>
-                          <option value="task">Tarefas</option>
-                        </select>
-                      </div>
-
-                      <div style={rowStyle}>
-                        <label style={labelStyle}>2. Atingir qual prazo?</label>
-                        <select value={gTrigger} onChange={e => setGTrigger(e.target.value)} style={{ ...fieldStyle, marginBottom: 6 }}>
-                          <option value="deadline_today">Prazo é hoje</option>
-                          <option value="deadline_overdue">Prazo já venceu (atrasado)</option>
-                        </select>
-                        {dateColumns.length === 0 ? (
-                          <div style={{ fontSize: 11, color: "#e2445c" }}>Nenhuma coluna de data encontrada. Crie uma coluna do tipo "data" no quadro.</div>
+                        <label style={labelStyle}>1. Quando (qual tarefa/subitem)?</label>
+                        {targetOptions.length === 0 ? (
+                          <div style={{ fontSize: 11, color: "#e2445c" }}>Nenhuma tarefa cadastrada no quadro.</div>
                         ) : (
-                          <select value={gDateCol} onChange={e => setGDateCol(e.target.value)} style={fieldStyle}>
-                            {dateColumns.map(c => <option key={c.id} value={c.id}>Coluna de data: {c.name}</option>)}
+                          <select value={gTarget} onChange={e => setGTarget(e.target.value)} style={fieldStyle}>
+                            <optgroup label="Tarefas">
+                              {targetOptions.filter(o => o.group === "Tarefas").map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                            </optgroup>
+                            <optgroup label="Subitens">
+                              {targetOptions.filter(o => o.group === "Subitens").map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                            </optgroup>
                           </select>
+                        )}
+                      </div>
+
+                      <div style={rowStyle}>
+                        <label style={labelStyle}>2. Atingir qual data (prazo)?</label>
+                        <select value={gDateSel} onChange={e => setGDateSel(e.target.value)} style={{ ...fieldStyle, marginBottom: gDateSel === "__custom__" ? 6 : 0 }}>
+                          <option value="">— escolher —</option>
+                          {knownDates.map(d => <option key={d} value={d}>{d} — {formatDate(d)} (prazo já existente)</option>)}
+                          <option value="__custom__">📅 Outra data (escolher)…</option>
+                        </select>
+                        {gDateSel === "__custom__" && (
+                          <input type="date" value={gCustomDate} onChange={e => setGCustomDate(e.target.value)} style={fieldStyle} />
                         )}
                       </div>
 
@@ -1932,11 +1960,6 @@ function AIPanel({ tasks, automations, setAutomations, canManageAutomations, col
                             })}
                           </div>
                         )}
-                      </div>
-
-                      <div style={rowStyle}>
-                        <label style={labelStyle}>5. (Opcional) Só em tarefas cujo nome contenha:</label>
-                        <input value={gTaskPattern} onChange={e => setGTaskPattern(e.target.value)} placeholder="Ex.: DESCONTO (deixe vazio p/ todas)" style={fieldStyle} />
                       </div>
                     </div>
                   );
