@@ -417,6 +417,9 @@ setInterval(() => { try { runNotifyScheduler(); } catch (e) { console.error('Not
 
 function auth(req,res,next){const t=req.headers.authorization?.split(' ')[1];if(!t)return res.status(401).json({error:'Token necessário'});try{req.user=jwt.verify(t,JWT_SECRET);next();}catch{return res.status(401).json({error:'Token inválido'});}}
 function adminOnly(req,res,next){if(req.user.role!=='admin')return res.status(403).json({error:'Acesso restrito'});next();}
+// Gerenciar automações (criar inclusive com IA, executar, ligar/desligar, excluir) é
+// liberado para admin E colaborador (usuário comum). Espelha ROLE_CONFIG.manageAutomations no front.
+function canManageAutomations(req,res,next){if(!['admin','collaborator'].includes(req.user.role))return res.status(403).json({error:'Acesso restrito'});next();}
 
 // Auth para arquivos: aceita token via header OU query param (?token=...).
 // O navegador nao envia Authorization header em <img src>, <a href> ou nova aba,
@@ -896,7 +899,7 @@ app.get('/api/automations', auth, (req, res) => {
   })));
 });
 
-app.put('/api/automations/:id', auth, adminOnly, (req, res) => {
+app.put('/api/automations/:id', auth, canManageAutomations, (req, res) => {
   const { active } = req.body;
   db.prepare('UPDATE automations SET active=? WHERE id=?').run(active ? 1 : 0, req.params.id);
   res.json({ success: true });
@@ -918,7 +921,7 @@ function checkParseRate(userId) {
   return true;
 }
 
-app.post('/api/automations', auth, adminOnly, async (req, res) => {
+app.post('/api/automations', auth, canManageAutomations, async (req, res) => {
   // Dois caminhos de criação:
   //  1. "rule" estruturada (formato guiado no front) → validada direto, SEM Gemini.
   //  2. "description" em texto livre → interpretada pelo Gemini (sujeita a cota/rate limit).
@@ -973,7 +976,7 @@ app.post('/api/automations', auth, adminOnly, async (req, res) => {
   }
 });
 
-app.post('/api/automations/:id/run', auth, adminOnly, (req, res) => {
+app.post('/api/automations/:id/run', auth, canManageAutomations, (req, res) => {
   const row = db.prepare('SELECT * FROM automations WHERE id=?').get(req.params.id);
   if (!row) return res.status(404).json({ error: 'Automação não encontrada' });
   if (!row.rule_config) return res.status(400).json({ error: 'Esta automação é apenas placeholder e não pode ser executada' });
@@ -994,7 +997,7 @@ app.post('/api/automations/:id/run', auth, adminOnly, (req, res) => {
   res.json(result);
 });
 
-app.delete('/api/automations/:id', auth, adminOnly, (req, res) => {
+app.delete('/api/automations/:id', auth, canManageAutomations, (req, res) => {
   const row = db.prepare('SELECT built_in FROM automations WHERE id=?').get(req.params.id);
   if (!row) return res.status(404).json({ error: 'Não encontrada' });
   if (row.built_in) return res.status(400).json({ error: 'Automações nativas não podem ser excluídas' });
@@ -1002,7 +1005,7 @@ app.delete('/api/automations/:id', auth, adminOnly, (req, res) => {
   res.json({ success: true });
 });
 
-app.get('/api/admin/gemini-health', auth, adminOnly, async (req, res) => {
+app.get('/api/admin/gemini-health', auth, canManageAutomations, async (req, res) => {
   const result = await geminiHealthCheck();
   res.json({ ...result, quota: geminiQuotaStatus() });
 });

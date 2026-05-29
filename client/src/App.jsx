@@ -73,7 +73,7 @@ const REGISTERED_USERS = [
 
 const ROLE_CONFIG = {
   admin: { label: "Administrador", color: "#e2445c", icon: "👑", permissions: { editTasks: true, deleteTasks: true, addColumns: true, deleteColumns: true, manageUsers: true, manageAutomations: true, accessDrive: true, viewAllUpdates: true, exportData: true } },
-  collaborator: { label: "Colaborador", color: "#579bfc", icon: "👤", permissions: { editTasks: true, deleteTasks: false, addColumns: true, deleteColumns: false, manageUsers: false, manageAutomations: false, accessDrive: true, viewAllUpdates: false, exportData: false } },
+  collaborator: { label: "Colaborador", color: "#579bfc", icon: "👤", permissions: { editTasks: true, deleteTasks: false, addColumns: true, deleteColumns: false, manageUsers: false, manageAutomations: true, accessDrive: true, viewAllUpdates: false, exportData: false } },
 };
 
 const INITIAL_COLUMNS = [
@@ -2617,7 +2617,7 @@ function AdminPanel({ users, onUpdateRole, onCreateUser, onDeleteUser, onClose, 
             <div style={{ background: "#23262e", borderRadius: 8, padding: 10, border: "1px solid #579bfc30" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}><span>👤</span><span style={{ fontWeight: 700, fontSize: 12, color: "#579bfc" }}>Colaborador</span></div>
               <div style={{ fontSize: 10, color: "#a5b1c2", lineHeight: 1.6 }}>
-                ✅ Editar tarefas existentes<br/>✅ Ver e enviar relatórios<br/>✅ Acessar Google Drive<br/>✅ Criar colunas<br/>🚫 Excluir colunas<br/>🚫 Gerenciar usuários
+                ✅ Editar tarefas existentes<br/>✅ Ver e enviar relatórios<br/>✅ Acessar Google Drive<br/>✅ Criar colunas<br/>✅ Criar automações IA<br/>🚫 Excluir colunas<br/>🚫 Gerenciar usuários
               </div>
             </div>
           </div>
