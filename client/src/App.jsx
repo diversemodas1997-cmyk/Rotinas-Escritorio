@@ -331,6 +331,35 @@ function PriorityBadge({ priority, onClick }) {
   const p = PRIORITY_COLORS[priority] || PRIORITY_COLORS["Média"];
   return <div onClick={onClick} style={{ background: p.bg, color: p.text, padding: "6px 0", borderRadius: 0, fontSize: 12, fontWeight: 600, textAlign: "center", width: "100%", cursor: onClick ? "pointer" : "default", userSelect: "none" }}>{priority}</div>;
 }
+// Horário no formato 24h ("HH:MM"), guardado como texto — mesmo formato do
+// <input type="time">, o que mantém a ordenação alfabética igual à cronológica.
+function EditTime({ value, onChange, small }) {
+  const [editing, setEditing] = useState(false);
+  const r = useRef();
+  const closingRef = useRef(false);
+
+  useEffect(() => { if (editing && r.current) { try { r.current.showPicker(); } catch (ex) {} r.current.focus(); } }, [editing]);
+
+  const commit = (v) => { closingRef.current = true; onChange(v || null); setEditing(false); };
+
+  if (!editing) return (
+    <div onClick={() => setEditing(true)} title="Clique para definir o horário"
+      style={{ cursor: "pointer", padding: "2px 5px", borderRadius: 4, color: value ? "#a5b1c2" : "#555", fontSize: small ? 12 : 12.5, display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}
+      onMouseEnter={e => e.currentTarget.style.background = "rgba(255,255,255,.06)"}
+      onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+      {value ? <><span style={{ fontSize: 10 }}>🕐</span>{value}</> : "🕐"}
+    </div>
+  );
+
+  return (
+    <input ref={r} type="time" value={value || ""}
+      onChange={e => commit(e.target.value)}
+      onBlur={() => setTimeout(() => { if (!closingRef.current) setEditing(false); closingRef.current = false; }, 200)}
+      onKeyDown={e => { if (e.key === "Enter") commit(e.target.value); if (e.key === "Escape") setEditing(false); }}
+      style={{ width: "100%", padding: "3px 4px", borderRadius: 4, border: "1px solid #6c5ce7", background: "#1a1d23", color: "#e8eaed", fontSize: 12, outline: "none", colorScheme: "dark" }} />
+  );
+}
+
 function CellRenderer({ col, item, onChange, allPeople, small, subitems, subColumns, taskColumns }) {
   const val = getVal(item, col);
   const update = (v) => onChange(setVal(item, col, v));
@@ -417,6 +446,7 @@ function CellRenderer({ col, item, onChange, allPeople, small, subitems, subColu
       const isAutoParentDeadline = col.builtIn && col.field === "deadline" && !small;
       return <EditDate value={val || null} onChange={v => update(v)} isDeadline={col.isDeadline} readOnly={isAutoParentDeadline} />;
     }
+    case "time": return <EditTime value={val || ""} onChange={v => update(v)} small={small} />;
     case "number": return <EditNum value={val || 0} onChange={v => update(v)} />;
     case "text": return <EditText value={val || ""} onChange={v => update(v)} style={{ color: "#c8ccd4", fontSize: small ? 12 : 13 }} />;
     default: return <span style={{ color: "#555" }}>—</span>;
@@ -912,9 +942,9 @@ function ColHeader({ col, onRename, onDelete, onToggleDeadline, onChangeType, on
   const ref = useRef(null);
   useClickOutside(ref, () => { setMenu(false); setShowTypeMenu(false); });
 
-  const typeIcons = { text: "📝", number: "🔢", date: "📅", status: "🔵", people: "👥", priority: "🔴" };
-  const typeLabels = { text: "Texto", number: "Número", date: "Data", status: "Status", people: "Pessoas", priority: "Prioridade" };
-  const allTypes = ["text", "number", "date", "status", "people", "priority"];
+  const typeIcons = { text: "📝", number: "🔢", date: "📅", time: "🕐", status: "🔵", people: "👥", priority: "🔴" };
+  const typeLabels = { text: "Texto", number: "Número", date: "Data", time: "Horário", status: "Status", people: "Pessoas", priority: "Prioridade" };
+  const allTypes = ["text", "number", "date", "time", "status", "people", "priority"];
 
   const menuItem = (icon, label, color, onClick, disabled) => (
     <div onClick={disabled ? undefined : () => { onClick(); setMenu(false); setShowTypeMenu(false); }}
@@ -990,9 +1020,9 @@ function ColHeader({ col, onRename, onDelete, onToggleDeadline, onChangeType, on
 // ─── ADD COLUMN MODAL ────────────────────────────────────────────────────────
 function AddColumnModal({ onClose, onAdd, columns, title: modalTitle, linkParent }) {
   const [name, setName] = useState(""); const [type, setType] = useState("text"); const [isDeadline, setIsDeadline] = useState(false); const [copyFrom, setCopyFrom] = useState(""); const [parentFor, setParentFor] = useState("");
-  const types = [{ value: "text", label: "Texto", icon: "📝" }, { value: "number", label: "Número", icon: "🔢" }, { value: "date", label: "Data", icon: "📅" }, { value: "status", label: "Status", icon: "🔵" }, { value: "people", label: "Pessoas", icon: "👥" }, { value: "priority", label: "Prioridade", icon: "🔴" }];
+  const types = [{ value: "text", label: "Texto", icon: "📝" }, { value: "number", label: "Número", icon: "🔢" }, { value: "date", label: "Data", icon: "📅" }, { value: "time", label: "Horário", icon: "🕐" }, { value: "status", label: "Status", icon: "🔵" }, { value: "people", label: "Pessoas", icon: "👥" }, { value: "priority", label: "Prioridade", icon: "🔴" }];
   const numericParents = linkParent ? columns.filter(c => c.type === "number") : [];
-  const handleAdd = () => { if (!name.trim()) return; const id = "col_" + Date.now(); const col = { id, name: name.trim(), type, field: id, builtIn: false, isDeadline: type === "date" && isDeadline, width: type === "people" ? "110px" : type === "status" || type === "priority" ? "110px" : type === "date" ? "100px" : "80px" }; if (linkParent && type === "number" && parentFor) col.parentColumnId = parentFor; onAdd(col); onClose(); };
+  const handleAdd = () => { if (!name.trim()) return; const id = "col_" + Date.now(); const col = { id, name: name.trim(), type, field: id, builtIn: false, isDeadline: type === "date" && isDeadline, width: type === "people" ? "110px" : type === "status" || type === "priority" ? "110px" : type === "date" ? "100px" : type === "time" ? "90px" : "80px" }; if (linkParent && type === "number" && parentFor) col.parentColumnId = parentFor; onAdd(col); onClose(); };
   const handleCopy = () => { if (!copyFrom) return; const src = columns.find(c => c.id === copyFrom); if (!src) return; const id = "col_" + Date.now(); const col = { ...src, id, field: id, name: src.name + " (cópia)", builtIn: false }; if (linkParent) col.parentColumnId = src.id; onAdd(col); onClose(); };
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, backdropFilter: "blur(4px)" }} onClick={onClose}>
