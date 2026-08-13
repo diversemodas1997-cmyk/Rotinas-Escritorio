@@ -843,22 +843,32 @@ app.get('/api/boards/:id/members', auth, adminOnly, (req, res) => {
   if (!db.prepare('SELECT id FROM boards WHERE id=?').get(boardId)) return res.status(404).json({ error: 'Quadro não encontrado' });
 
   const explicit = new Set(db.prepare('SELECT user_id FROM board_members WHERE board_id=?').all(boardId).map(r => r.user_id));
-  const byTask = new Set();
-  for (const t of db.prepare('SELECT responsible FROM tasks WHERE board_id=?').all(boardId)) {
-    try { (JSON.parse(t.responsible || '[]') || []).forEach(n => byTask.add(n)); } catch {}
+  // Onde exatamente cada nome aparece como responsável neste quadro. Guardar o
+  // local (e não só um sim/não) é o que permite responder "por que fulano vê
+  // este quadro" sem ter que vasculhar o banco na mão.
+  const locais = {};
+  const marcar = (json, onde) => {
+    try { (JSON.parse(json || '[]') || []).forEach(n => { (locais[n] = locais[n] || []).push(onde); }); } catch {}
+  };
+  for (const t of db.prepare('SELECT name, responsible FROM tasks WHERE board_id=?').all(boardId)) {
+    marcar(t.responsible, `tarefa "${t.name}"`);
   }
-  for (const s of db.prepare('SELECT s.responsible AS r FROM subitems s JOIN tasks t ON s.task_id=t.id WHERE t.board_id=?').all(boardId)) {
-    try { (JSON.parse(s.r || '[]') || []).forEach(n => byTask.add(n)); } catch {}
+  for (const s of db.prepare('SELECT s.name AS sname, s.responsible AS r, t.name AS tname FROM subitems s JOIN tasks t ON s.task_id=t.id WHERE t.board_id=?').all(boardId)) {
+    marcar(s.r, `subitem "${s.sname}" (em "${s.tname}")`);
   }
 
   const users = db.prepare('SELECT id, name, username, role FROM users ORDER BY name').all();
-  res.json(users.map(u => ({
-    id: u.id, name: u.name, username: u.username, role: u.role,
-    member: explicit.has(u.id),
-    viaTask: byTask.has(u.name),
-    // Por que este usuário enxerga o quadro hoje.
-    reason: u.role === 'admin' ? 'admin' : (explicit.has(u.id) ? 'member' : (byTask.has(u.name) ? 'task' : null)),
-  })));
+  res.json(users.map(u => {
+    const onde = locais[u.name] || [];
+    return {
+      id: u.id, name: u.name, username: u.username, role: u.role,
+      member: explicit.has(u.id),
+      viaTask: onde.length > 0,
+      where: onde.slice(0, 12),
+      // Por que este usuário enxerga o quadro hoje.
+      reason: u.role === 'admin' ? 'admin' : (explicit.has(u.id) ? 'member' : (onde.length ? 'task' : null)),
+    };
+  }));
 });
 
 // Substitui a lista de acesso explícito do quadro.

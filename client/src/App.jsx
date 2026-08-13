@@ -3376,9 +3376,16 @@ function BoardAccessModal({ board, onClose }) {
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 13, color: "#e8eaed", fontWeight: 600 }}>{u.name}</div>
           <div style={{ fontSize: 11, color: "#778ca3" }}>@{u.username}</div>
+          {!isAdmin && u.viaTask && (
+            // Aponta o vínculo exato: é aqui que se descobre por que alguém
+            // enxerga o quadro sem ter sido liberado de propósito.
+            <div style={{ fontSize: 10.5, color: "#fdab3d", marginTop: 3, lineHeight: 1.4 }}>
+              Enxerga por: {(u.where || []).slice(0, 3).join("; ")}{(u.where || []).length > 3 ? ` … +${u.where.length - 3}` : ""}
+            </div>
+          )}
         </div>
-        {isAdmin && <span title="Administradores enxergam todos os quadros" style={{ fontSize: 10, color: "#e2445c", border: "1px solid rgba(226,68,92,.4)", borderRadius: 10, padding: "2px 7px" }}>admin — vê tudo</span>}
-        {!isAdmin && u.viaTask && <span title="Já enxerga o quadro por ser responsável em alguma tarefa ou subitem daqui" style={{ fontSize: 10, color: "#fdab3d", border: "1px solid rgba(253,171,61,.4)", borderRadius: 10, padding: "2px 7px" }}>responsável em tarefa</span>}
+        {isAdmin && <span title="Administradores enxergam todos os quadros, independente desta lista" style={{ fontSize: 10, color: "#e2445c", border: "1px solid rgba(226,68,92,.4)", borderRadius: 10, padding: "2px 7px", flexShrink: 0 }}>admin — vê tudo</span>}
+        {!isAdmin && u.viaTask && <span title={(u.where || []).join("\n")} style={{ fontSize: 10, color: "#fdab3d", border: "1px solid rgba(253,171,61,.4)", borderRadius: 10, padding: "2px 7px", flexShrink: 0 }}>responsável</span>}
       </div>
     );
   };
