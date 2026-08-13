@@ -3377,6 +3377,7 @@ function BoardsSidebar({ folders, boards, currentBoardId, onSelectBoard, onNewBo
 function BoardAccessModal({ board, onClose }) {
   const [rows, setRows] = useState(null);
   const [checked, setChecked] = useState({});
+  const [restrito, setRestrito] = useState(!!board.restricted);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
 
@@ -3385,19 +3386,25 @@ function BoardAccessModal({ board, onClose }) {
     (async () => {
       const data = await apiCall(`/boards/${board.id}/members`);
       if (!alive) return;
-      if (!data) { setErr("Não foi possível carregar a lista de usuários."); setRows([]); return; }
-      setRows(data);
-      setChecked(Object.fromEntries(data.map(u => [u.id, !!u.member])));
+      if (!data || !Array.isArray(data.users)) { setErr("Não foi possível carregar a lista de usuários."); setRows([]); return; }
+      setRows(data.users);
+      setRestrito(!!data.restricted);
+      setChecked(Object.fromEntries(data.users.map(u => [u.id, !!u.member])));
     })();
     return () => { alive = false; };
   }, [board.id]);
 
+  // Com o quadro restrito, quem só entrava por ser responsável perde o acesso.
+  const perdemAcesso = (rows || []).filter(u => u.role !== "admin" && u.viaTask && !checked[u.id]);
+
   const save = async () => {
     setSaving(true); setErr("");
     const userIds = Object.entries(checked).filter(([, v]) => v).map(([k]) => Number(k));
-    const r = await apiCall(`/boards/${board.id}/members`, { method: "PUT", body: JSON.stringify({ userIds }), returnError: true });
+    const r1 = await apiCall(`/boards/${board.id}/members`, { method: "PUT", body: JSON.stringify({ userIds }), returnError: true });
+    if (r1?.error) { setSaving(false); setErr(r1.error); return; }
+    const r2 = await apiCall(`/boards/${board.id}`, { method: "PUT", body: JSON.stringify({ restricted: restrito }), returnError: true });
     setSaving(false);
-    if (r?.error) { setErr(r.error); return; }
+    if (r2?.error) { setErr(r2.error); return; }
     onClose(true);
   };
 
@@ -3416,8 +3423,8 @@ function BoardAccessModal({ board, onClose }) {
           {!isAdmin && u.viaTask && (
             // Aponta o vínculo exato: é aqui que se descobre por que alguém
             // enxerga o quadro sem ter sido liberado de propósito.
-            <div style={{ fontSize: 10.5, color: "#fdab3d", marginTop: 3, lineHeight: 1.4 }}>
-              Enxerga por: {(u.where || []).slice(0, 3).join("; ")}{(u.where || []).length > 3 ? ` … +${u.where.length - 3}` : ""}
+            <div style={{ fontSize: 10.5, color: restrito ? "#667" : "#fdab3d", marginTop: 3, lineHeight: 1.4, textDecoration: restrito ? "line-through" : "none" }}>
+              {restrito ? "Responsável em: " : "Enxerga por: "}{(u.where || []).slice(0, 3).join("; ")}{(u.where || []).length > 3 ? ` … +${u.where.length - 3}` : ""}
             </div>
           )}
         </div>
@@ -3438,6 +3445,29 @@ function BoardAccessModal({ board, onClose }) {
         <div style={{ padding: "10px 14px", flex: 1, overflow: "auto" }}>
           <div style={{ fontSize: 11.5, color: "#a5b1c2", lineHeight: 1.5, marginBottom: 10 }}>
             Marque quem pode ver este quadro. O acesso vale por si só — não é preciso colocar a pessoa como responsável em nenhuma tarefa.
+          </div>
+
+          {/* Sem isto ligado, ser responsável por uma tarefa daqui continua
+              abrindo o quadro, mesmo para quem não está marcado acima. */}
+          <div style={{ background: "#1a1d23", border: `1px solid ${restrito ? "#6c5ce7" : "#333"}`, borderRadius: 9, padding: "10px 12px", marginBottom: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div onClick={() => setRestrito(v => !v)} style={{ width: 38, height: 20, borderRadius: 10, background: restrito ? "#6c5ce7" : "#444", cursor: "pointer", position: "relative", flexShrink: 0 }}>
+                <div style={{ width: 16, height: 16, borderRadius: "50%", background: "#fff", position: "absolute", top: 2, left: restrito ? 20 : 2, transition: "left .2s" }} />
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 12.5, fontWeight: 600, color: "#e8eaed" }}>Somente quem está marcado vê este quadro</div>
+                <div style={{ fontSize: 11, color: "#778ca3", marginTop: 2 }}>
+                  {restrito
+                    ? "Ser responsável por uma tarefa daqui não dá mais acesso."
+                    : "Desligado: quem é responsável por qualquer tarefa ou subitem daqui também enxerga o quadro."}
+                </div>
+              </div>
+            </div>
+            {restrito && perdemAcesso.length > 0 && (
+              <div style={{ marginTop: 9, paddingTop: 9, borderTop: "1px solid #333", fontSize: 11, color: "#fdab3d", lineHeight: 1.5 }}>
+                ⚠ Ao salvar, {perdemAcesso.length === 1 ? "esta pessoa perde" : "estas pessoas perdem"} o acesso: {perdemAcesso.map(u => u.name).join(", ")}. Marque quem deve continuar entrando.
+              </div>
+            )}
           </div>
           {rows === null && <div style={{ padding: 20, textAlign: "center", color: "#778ca3", fontSize: 13 }}>Carregando...</div>}
           {rows && rows.length === 0 && !err && <div style={{ padding: 20, textAlign: "center", color: "#778ca3", fontSize: 13 }}>Nenhum usuário cadastrado.</div>}

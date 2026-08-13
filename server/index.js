@@ -42,6 +42,7 @@ db.exec(`
     id TEXT PRIMARY KEY, name TEXT NOT NULL, icon TEXT DEFAULT '📋',
     color TEXT DEFAULT '#6c5ce7', sort_order INTEGER DEFAULT 0,
     folder_id TEXT DEFAULT 'folder_operacionais',
+    restricted INTEGER DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
   CREATE TABLE IF NOT EXISTS tasks (
@@ -156,6 +157,13 @@ db.exec(`
     PRIMARY KEY (board_id, user_id)
   );
 `);
+
+// Quadro restrito: só quem está na lista de acesso enxerga, mesmo que seja
+// responsável por alguma tarefa dele. Padrão 0 = mantém o comportamento antigo.
+(function migrateBoardRestricted() {
+  const cols = db.prepare("PRAGMA table_info(boards)").all().map(c => c.name);
+  if (cols.length && !cols.includes('restricted')) db.exec("ALTER TABLE boards ADD COLUMN restricted INTEGER DEFAULT 0");
+})();
 
 // Non-destructive migration: subitems ganharam prioridade própria (a coluna
 // "Prioridade" já era exibida na linha do subitem, mas o valor não era salvo).
@@ -637,9 +645,22 @@ app.put('/api/users/:id', auth, (req, res) => {
 app.put('/api/users/:id/role',auth,adminOnly,(req,res)=>{const{role}=req.body;if(!['admin','collaborator'].includes(role))return res.status(400).json({error:'Cargo inválido'});const ac=db.prepare("SELECT COUNT(*) as c FROM users WHERE role='admin'").get().c;const t=db.prepare('SELECT role FROM users WHERE id=?').get(req.params.id);if(t?.role==='admin'&&role!=='admin'&&ac<=1)return res.status(400).json({error:'Precisa de 1 admin'});db.prepare('UPDATE users SET role=? WHERE id=?').run(role,req.params.id);res.json({success:true});});
 
 // ===== Folders =====
+// Usuário comum só recebe as pastas que contêm ao menos um quadro que ele
+// pode abrir. Sem isso, a pasta de um quadro sem acesso aparecia na barra
+// lateral (vazia), revelando a existência do quadro para quem não participa.
 app.get('/api/folders', auth, (req, res) => {
   const rows = db.prepare('SELECT * FROM board_folders ORDER BY sort_order, created_at').all();
-  res.json(rows.map(f => ({ id: f.id, name: f.name, icon: f.icon, color: f.color, sortOrder: f.sort_order, createdAt: f.created_at })));
+  let visiveis = rows;
+  if (req.user.role !== 'admin') {
+    const acessiveis = getAccessibleBoardIds(req.user.name, req.user.id);
+    const comAcesso = new Set(
+      db.prepare('SELECT id, folder_id FROM boards').all()
+        .filter(b => acessiveis.has(b.id))
+        .map(b => b.folder_id)
+    );
+    visiveis = rows.filter(f => comAcesso.has(f.id));
+  }
+  res.json(visiveis.map(f => ({ id: f.id, name: f.name, icon: f.icon, color: f.color, sortOrder: f.sort_order, createdAt: f.created_at })));
 });
 
 app.post('/api/folders', auth, adminOnly, (req, res) => {
@@ -690,15 +711,20 @@ app.delete('/api/folders/:id', auth, adminOnly, (req, res) => {
 });
 
 // ===== Boards =====
-// Quadros visíveis para o usuário: os que o admin liberou explicitamente
-// (board_members) MAIS aqueles onde ele é responsável por alguma tarefa ou
-// subitem. Admin enxerga todos.
+// Quadros visíveis para o usuário. Duas regras, escolhidas por quadro:
+//   restricted=0 (padrão): lista de acesso SOMA com a responsabilidade — quem
+//     está em board_members OU é responsável por tarefa/subitem enxerga.
+//   restricted=1: SÓ a lista de acesso vale. Ser responsável por uma tarefa
+//     não abre mais o quadro. É o que permite tirar alguém de vez.
+// Admin enxerga todos, nos dois casos.
 function getAccessibleBoardIds(userName, userId) {
   const ids = new Set();
+  const restritos = new Set(db.prepare('SELECT id FROM boards WHERE restricted=1').all().map(b => b.id));
   if (userId != null) {
     for (const m of db.prepare('SELECT board_id FROM board_members WHERE user_id=?').all(userId)) ids.add(m.board_id);
   }
   for (const t of db.prepare('SELECT board_id, responsible FROM tasks').all()) {
+    if (restritos.has(t.board_id)) continue;
     try {
       const arr = JSON.parse(t.responsible || '[]');
       if (Array.isArray(arr) && arr.includes(userName)) ids.add(t.board_id);
@@ -707,6 +733,7 @@ function getAccessibleBoardIds(userName, userId) {
   for (const s of db.prepare(
     'SELECT t.board_id AS board_id, s.responsible AS responsible FROM subitems s JOIN tasks t ON s.task_id = t.id'
   ).all()) {
+    if (restritos.has(s.board_id)) continue;
     try {
       const arr = JSON.parse(s.responsible || '[]');
       if (Array.isArray(arr) && arr.includes(userName)) ids.add(s.board_id);
@@ -727,7 +754,7 @@ app.get('/api/boards', auth, (req, res) => {
     const accessible = getAccessibleBoardIds(req.user.name, req.user.id);
     rows = rows.filter(b => accessible.has(b.id));
   }
-  res.json(rows.map(b => ({ id: b.id, name: b.name, icon: b.icon, color: b.color, sortOrder: b.sort_order, folderId: b.folder_id, createdAt: b.created_at })));
+  res.json(rows.map(b => ({ id: b.id, name: b.name, icon: b.icon, color: b.color, sortOrder: b.sort_order, folderId: b.folder_id, restricted: !!b.restricted, createdAt: b.created_at })));
 });
 
 app.post('/api/boards', auth, adminOnly, (req, res) => {
@@ -806,7 +833,7 @@ app.post('/api/boards', auth, adminOnly, (req, res) => {
 });
 
 app.put('/api/boards/:id', auth, adminOnly, (req, res) => {
-  const { name, icon, color, folderId } = req.body || {};
+  const { name, icon, color, folderId, restricted } = req.body || {};
   const b = db.prepare('SELECT * FROM boards WHERE id=?').get(req.params.id);
   if (!b) return res.status(404).json({ error: 'Quadro não encontrado' });
   const upd = [];
@@ -818,11 +845,12 @@ app.put('/api/boards/:id', auth, adminOnly, (req, res) => {
     if (!db.prepare('SELECT id FROM board_folders WHERE id=?').get(folderId)) return res.status(400).json({ error: 'Pasta inválida' });
     upd.push('folder_id=?'); params.push(folderId);
   }
+  if (restricted !== undefined) { upd.push('restricted=?'); params.push(restricted ? 1 : 0); }
   if (!upd.length) return res.status(400).json({ error: 'Nada para atualizar' });
   params.push(req.params.id);
   db.prepare(`UPDATE boards SET ${upd.join(',')} WHERE id=?`).run(...params);
   const row = db.prepare('SELECT * FROM boards WHERE id=?').get(req.params.id);
-  res.json({ id: row.id, name: row.name, icon: row.icon, color: row.color, sortOrder: row.sort_order, folderId: row.folder_id, createdAt: row.created_at });
+  res.json({ id: row.id, name: row.name, icon: row.icon, color: row.color, sortOrder: row.sort_order, folderId: row.folder_id, restricted: !!row.restricted, createdAt: row.created_at });
 });
 
 app.put('/api/boards/reorder', auth, adminOnly, (req, res) => {
@@ -840,7 +868,8 @@ app.put('/api/boards/reorder', auth, adminOnly, (req, res) => {
 // tudo por definição do papel, então aparece marcado como 'admin'.
 app.get('/api/boards/:id/members', auth, adminOnly, (req, res) => {
   const boardId = req.params.id;
-  if (!db.prepare('SELECT id FROM boards WHERE id=?').get(boardId)) return res.status(404).json({ error: 'Quadro não encontrado' });
+  const board = db.prepare('SELECT id, restricted FROM boards WHERE id=?').get(boardId);
+  if (!board) return res.status(404).json({ error: 'Quadro não encontrado' });
 
   const explicit = new Set(db.prepare('SELECT user_id FROM board_members WHERE board_id=?').all(boardId).map(r => r.user_id));
   // Onde exatamente cada nome aparece como responsável neste quadro. Guardar o
@@ -858,17 +887,23 @@ app.get('/api/boards/:id/members', auth, adminOnly, (req, res) => {
   }
 
   const users = db.prepare('SELECT id, name, username, role FROM users ORDER BY name').all();
-  res.json(users.map(u => {
-    const onde = locais[u.name] || [];
-    return {
-      id: u.id, name: u.name, username: u.username, role: u.role,
-      member: explicit.has(u.id),
-      viaTask: onde.length > 0,
-      where: onde.slice(0, 12),
-      // Por que este usuário enxerga o quadro hoje.
-      reason: u.role === 'admin' ? 'admin' : (explicit.has(u.id) ? 'member' : (onde.length ? 'task' : null)),
-    };
-  }));
+  const restrito = !!board.restricted;
+  res.json({
+    restricted: restrito,
+    users: users.map(u => {
+      const onde = locais[u.name] || [];
+      // Em quadro restrito, ser responsável não abre mais o acesso.
+      const enxergaPorTarefa = onde.length > 0 && !restrito;
+      return {
+        id: u.id, name: u.name, username: u.username, role: u.role,
+        member: explicit.has(u.id),
+        viaTask: onde.length > 0,
+        where: onde.slice(0, 12),
+        // Por que este usuário enxerga o quadro hoje.
+        reason: u.role === 'admin' ? 'admin' : (explicit.has(u.id) ? 'member' : (enxergaPorTarefa ? 'task' : null)),
+      };
+    }),
+  });
 });
 
 // Substitui a lista de acesso explícito do quadro.
