@@ -3902,9 +3902,10 @@ function Dashboard({ currentUser, onLogout }) {
     }
     setNotifPopupEnabled(true);
   };
-  // Alerta sonoro contínuo de 3 segundos, sintetizado na hora pela Web Audio
-  // API (sem arquivo externo). Duas senoides em quinta justa dão um tom cheio
-  // que atravessa o ruído do escritório sem virar chiado.
+  // Alerta sonoro de ~3 segundos, sintetizado na hora pela Web Audio API (sem
+  // arquivo externo). Em vez de um tom contínuo, um arpejo de sino: quatro
+  // notas de um acorde maior que entram em sequência e decaem naturalmente,
+  // como um carrilhão. Preenche os 3 segundos sem cansar o ouvido.
   const ALARM_SECONDS = 3;
   const alarmUntilRef = useRef(0);
   const playChime = () => {
@@ -3917,24 +3918,64 @@ function Dashboard({ currentUser, onLogout }) {
       if (!ctx) return;
       if (ctx.state === "suspended") ctx.resume();
       const now = ctx.currentTime;
-      // Já tem alarme tocando: não empilha um segundo por cima.
+      // Já tem alerta tocando: não empilha um segundo por cima.
       if (now < alarmUntilRef.current) return;
       alarmUntilRef.current = now + ALARM_SECONDS;
-      const tone = (freq, level) => {
-        const osc = ctx.createOscillator();
+
+      // Filtro suave tira o brilho agudo que deixa o sino estridente.
+      const filtro = ctx.createBiquadFilter();
+      filtro.type = "lowpass";
+      filtro.frequency.setValueAtTime(2800, now);
+      filtro.Q.setValueAtTime(0.7, now);
+      filtro.connect(ctx.destination);
+
+      // Saída geral: garante silêncio exato aos 3s, sem estalo, independente
+      // do quanto a cauda de cada nota ainda estivesse soando.
+      const master = ctx.createGain();
+      master.gain.setValueAtTime(1, now);
+      master.gain.setValueAtTime(1, now + ALARM_SECONDS - 0.3);
+      master.gain.linearRampToValueAtTime(0.0001, now + ALARM_SECONDS);
+      master.connect(filtro);
+
+      // Uma nota de sino: fundamental + oitava discreta, ataque rápido e
+      // decaimento exponencial (é o decaimento que faz soar percussivo/doce
+      // em vez de um bipe eletrônico).
+      const nota = (freq, atraso, nivel, duracao = 1.6) => {
+        const t0 = now + atraso;
         const gain = ctx.createGain();
+        gain.gain.setValueAtTime(0.0001, t0);
+        gain.gain.exponentialRampToValueAtTime(nivel, t0 + 0.015);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t0 + duracao);
+        gain.connect(master);
+
+        const fim = Math.min(t0 + duracao, now + ALARM_SECONDS) + 0.05;
+        const osc = ctx.createOscillator();
         osc.type = "sine";
-        osc.frequency.setValueAtTime(freq, now);
-        gain.gain.setValueAtTime(0, now);
-        gain.gain.linearRampToValueAtTime(level, now + 0.04);            // ataque suave
-        gain.gain.setValueAtTime(level, now + ALARM_SECONDS - 0.15);     // sustenta o tempo todo
-        gain.gain.linearRampToValueAtTime(0, now + ALARM_SECONDS);       // corte sem estalo
-        osc.connect(gain).connect(ctx.destination);
-        osc.start(now);
-        osc.stop(now + ALARM_SECONDS + 0.05);
+        osc.frequency.setValueAtTime(freq, t0);
+        osc.connect(gain);
+        osc.start(t0); osc.stop(fim);
+
+        const harm = ctx.createOscillator();
+        const harmGain = ctx.createGain();
+        harm.type = "sine";
+        harm.frequency.setValueAtTime(freq * 2, t0);
+        harmGain.gain.setValueAtTime(0.22, t0);   // oitava só como brilho
+        harm.connect(harmGain).connect(gain);
+        harm.start(t0); harm.stop(fim);
       };
-      tone(880, 0.16);
-      tone(1320, 0.10);
+
+      // Toque de telefone: um motivo curto de Dó maior subindo, repetido duas
+      // vezes com um respiro no meio. É o padrão que o ouvido reconhece como
+      // "está tocando" — chama atenção sem o incômodo de um tom contínuo.
+      const DO5 = 523.25, MI5 = 659.25, SOL5 = 783.99, DO6 = 1046.50;
+      const toque = (inicio, volume, cauda) => {
+        nota(DO5, inicio + 0.00, 0.15 * volume, cauda);
+        nota(MI5, inicio + 0.15, 0.145 * volume, cauda);
+        nota(SOL5, inicio + 0.30, 0.14 * volume, cauda);
+        nota(DO6, inicio + 0.45, 0.135 * volume, cauda + 0.4);
+      };
+      toque(0.00, 1.0, 1.3);    // primeiro toque
+      toque(1.45, 0.85, 1.7);   // segundo, um pouco mais suave, cauda até os 3s
     } catch {}
   };
 
