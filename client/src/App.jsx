@@ -3902,12 +3902,34 @@ function Dashboard({ currentUser, onLogout }) {
     }
     setNotifPopupEnabled(true);
   };
-  // Ringtone polifônico curto: três vozes tocando ao mesmo tempo — melodia,
+  // Som de notificação: toca client/public/notificacao.mp3. Se o arquivo faltar
+  // ou o navegador recusar, cai no ringtone sintetizado logo abaixo — assim o
+  // aviso nunca fica mudo.
+  const audioElRef = useRef(null);
+  const alarmUntilMsRef = useRef(0);
+  const playChime = () => {
+    if (Date.now() < alarmUntilMsRef.current) return;   // não empilha alertas
+    alarmUntilMsRef.current = Date.now() + 900;
+    try {
+      if (!audioElRef.current) {
+        audioElRef.current = new Audio((process.env.PUBLIC_URL || "") + "/notificacao.mp3");
+        audioElRef.current.preload = "auto";
+      }
+      const el = audioElRef.current;
+      el.currentTime = 0;
+      const p = el.play();
+      if (p && p.catch) p.catch(() => tocarSintetizado());
+    } catch {
+      tocarSintetizado();
+    }
+  };
+
+  // Ringtone polifônico de reserva: três vozes tocando ao mesmo tempo — melodia,
   // harmonia em terças e baixo — sobre uma tríade de Dó maior. Sintetizado na
-  // hora pela Web Audio API, sem arquivo externo.
+  // hora pela Web Audio API, sem depender de arquivo.
   const ALARM_SECONDS = 2.2;
   const alarmUntilRef = useRef(0);
-  const playChime = () => {
+  const tocarSintetizado = () => {
     try {
       if (!audioCtxRef.current) {
         const Ctx = window.AudioContext || window.webkitAudioContext;
