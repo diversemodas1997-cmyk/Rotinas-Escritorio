@@ -1165,7 +1165,13 @@ function BoardView({ tasks, setTasks, apiUpdateTask, apiUpdateSub, apiAddTask, a
     });
   }, [highlights, tasks]);
 
-  const filtered = useMemo(() => { if (!search) return tasks; const q = search.toLowerCase(); return tasks.filter(t => t.name.toLowerCase().includes(q) || (t.responsible || []).some(r => r.toLowerCase().includes(q)) || t.subitems.some(s => s.name.toLowerCase().includes(q))); }, [tasks, search]);
+  // O quadro está SEMPRE ordenado por prioridade — não depende de alguém ter
+  // mexido em alguma tarefa. Sort estável, então a ordem manual (arrastar)
+  // continua valendo entre tarefas de mesma prioridade.
+  const filtered = useMemo(() => {
+    const base = !search ? tasks : (() => { const q = search.toLowerCase(); return tasks.filter(t => t.name.toLowerCase().includes(q) || (t.responsible || []).some(r => r.toLowerCase().includes(q)) || t.subitems.some(s => s.name.toLowerCase().includes(q))); })();
+    return sortByPriority(base);
+  }, [tasks, search]);
   const upTask = (tid, nt) => { if (apiUpdateTask) apiUpdateTask(tid, nt); else setTasks(prev => prev.map(t => t.id === tid ? (typeof nt === "function" ? nt(t) : nt) : t)); };
   const upSub = (tid, sid, ns) => { if (apiUpdateSub) apiUpdateSub(tid, sid, ns); else setTasks(prev => prev.map(t => t.id === tid ? { ...t, subitems: t.subitems.map(s => s.id === sid ? (typeof ns === "function" ? ns(s) : ns) : s) } : t)); };
 
@@ -1348,7 +1354,11 @@ function BoardView({ tasks, setTasks, apiUpdateTask, apiUpdateSub, apiAddTask, a
 
 // Extracted subitems block to use its own drag hook
 function SubitemsBlock({ highlights = {}, onClearHighlight = () => {}, task, allCols, subColumns, setSubColumns, apiUpdateSubColumn, apiDeleteSubColumn, apiReorderSubColumns, setColumns, apiUpdateColumn, apiDeleteColumn, taskColWidth, cellBorder, hdrStyle, cellStyle, upTask, upSub, onOpenUpdates, allPeople, perms, setShowAddSubCol, setActiveSubColTaskId, subReorder, apiAddSubitem }) {
-  const subDrag = useDragReorder(task.subitems, subReorder);
+  // Mesma regra das tarefas: o bloco sai sempre por prioridade, independente
+  // de alguém ter mexido em algo. Sort estável preserva a ordem manual dentro
+  // de cada faixa de prioridade.
+  const subitems = useMemo(() => sortByPriority(task.subitems || []), [task.subitems]);
+  const subDrag = useDragReorder(subitems, subReorder);
   const resizeC = (colId, newW, setter) => setter(prev => prev.map(c => c.id === colId ? { ...c, width: newW + "px" } : c));
   const taskSubColumns = subColumns.filter(sc => sc.taskId === task.id);
   const subColDrag = useDragReorder(taskSubColumns, (newTaskSubCols) => {
@@ -1423,7 +1433,7 @@ function SubitemsBlock({ highlights = {}, onClearHighlight = () => {}, task, all
         ))}
         <div style={{ height: 34 }} />
       </div>
-      {task.subitems.map((sub, si) => {
+      {subitems.map((sub, si) => {
         const hlKey = `s:${sub.id}`;
         const isHot = !!highlights[hlKey];
         return (
@@ -1472,7 +1482,8 @@ function SubitemsBlock({ highlights = {}, onClearHighlight = () => {}, task, all
 
 // ─── KANBAN VIEW ─────────────────────────────────────────────────────────────
 function KanbanView({ tasks, setTasks, apiUpdateTask, search, allPeople, onOpenUpdates, highlights = {}, onClearHighlight = () => {} }) {
-  const filtered = useMemo(() => { if (!search) return tasks; const q = search.toLowerCase(); return tasks.filter(t => t.name.toLowerCase().includes(q) || (t.responsible||[]).some(r => r.toLowerCase().includes(q))); }, [tasks, search]);
+  const filtered = useMemo(() => { const base = !search ? tasks : (() => { const q = search.toLowerCase(); return tasks.filter(t => t.name.toLowerCase().includes(q) || (t.responsible||[]).some(r => r.toLowerCase().includes(q))); })(); return sortByPriority(base); }, [tasks, search]);
+  // Dentro de cada coluna de status os cards também saem por prioridade.
   const cols = useMemo(() => { const c = {}; STATUSES.forEach(s => c[s] = []); filtered.forEach(t => { if (c[t.status]) c[t.status].push(t); }); return c; }, [filtered]);
   const up = (tid, p) => { if (apiUpdateTask) { apiUpdateTask(tid, (prev) => ({ ...prev, ...p })); } else { setTasks(prev => prev.map(t => t.id === tid ? { ...t, ...p } : t)); } };
   return (
