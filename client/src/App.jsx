@@ -62,14 +62,8 @@ const STATUS_COLORS = { "Não iniciado": { bg: "#c4c4c4", text: "#333" }, "Em an
 const PRIORITY_COLORS = { "Crítica": { bg: "#333", text: "#fff" }, "Alta": { bg: "#401694", text: "#fff" }, "Média": { bg: "#5559df", text: "#fff" }, "Baixa": { bg: "#579bfc", text: "#fff" } };
 const PEOPLE_COLORS = { Gabriela: "#ff642e", Camila: "#fdab3d", Junior: "#a25ddc", Ana: "#00c875", Pedro: "#579bfc", Lucas: "#e2445c" };
 
-const REGISTERED_USERS = [
-  { name: "Gabriela", email: "gabriela@rotina.com", password: "123456", role: "collaborator" },
-  { name: "Camila", email: "camila@rotina.com", password: "123456", role: "collaborator" },
-  { name: "Junior", email: "junior@rotina.com", password: "123456", role: "admin" },
-  { name: "Ana", email: "ana@rotina.com", password: "123456", role: "collaborator" },
-  { name: "Pedro", email: "pedro@rotina.com", password: "123456", role: "collaborator" },
-  { name: "Lucas", email: "lucas@rotina.com", password: "123456", role: "collaborator" },
-];
+// Nome de usuário: mesma regra do servidor (3 a 20, letras/números/. _ -).
+const USERNAME_RE = /^[a-zA-Z0-9._-]{3,20}$/;
 
 const ROLE_CONFIG = {
   admin: { label: "Administrador", color: "#e2445c", icon: "👑", permissions: { editTasks: true, deleteTasks: true, addColumns: true, deleteColumns: true, manageUsers: true, manageAutomations: true, accessDrive: true, viewAllUpdates: true, exportData: true } },
@@ -2502,7 +2496,7 @@ function AdminPanel({ users, onUpdateRole, onCreateUser, onDeleteUser, onClose, 
   const [confirmAction, setConfirmAction] = useState(null);
   const [showCreate, setShowCreate] = useState(false);
   const [newName, setNewName] = useState("");
-  const [newEmail, setNewEmail] = useState("");
+  const [newUsername, setNewUsername] = useState("");
   const [newPass, setNewPass] = useState("");
   const [newRole, setNewRole] = useState("collaborator");
   const [createErr, setCreateErr] = useState("");
@@ -2510,13 +2504,14 @@ function AdminPanel({ users, onUpdateRole, onCreateUser, onDeleteUser, onClose, 
 
   const submitCreate = async () => {
     setCreateErr("");
-    if (!newName.trim() || !newEmail.trim() || !newPass) { setCreateErr("Preencha nome, email e senha"); return; }
+    if (!newName.trim() || !newUsername.trim() || !newPass) { setCreateErr("Preencha nome, usuário e senha"); return; }
+    if (!USERNAME_RE.test(newUsername.trim())) { setCreateErr("Usuário deve ter 3 a 20 caracteres (letras, números, . _ -)"); return; }
     if (newPass.length < 4) { setCreateErr("Senha deve ter pelo menos 4 caracteres"); return; }
     setCreating(true);
     try {
-      const r = await onCreateUser({ name: newName.trim(), email: newEmail.trim(), password: newPass, role: newRole });
+      const r = await onCreateUser({ name: newName.trim(), username: newUsername.trim().toLowerCase(), password: newPass, role: newRole });
       if (r?.error) { setCreateErr(r.error); return; }
-      setNewName(""); setNewEmail(""); setNewPass(""); setNewRole("collaborator"); setShowCreate(false);
+      setNewName(""); setNewUsername(""); setNewPass(""); setNewRole("collaborator"); setShowCreate(false);
     } catch (e) {
       setCreateErr("Erro inesperado: " + (e?.message || "tente novamente"));
     } finally {
@@ -2635,7 +2630,7 @@ function AdminPanel({ users, onUpdateRole, onCreateUser, onDeleteUser, onClose, 
             <div style={{ background: "#23262e", border: "1px solid #00c87530", borderRadius: 10, padding: 14, marginBottom: 12, display: "flex", flexDirection: "column", gap: 8 }}>
               <input value={newName} onChange={e => { setNewName(e.target.value); setCreateErr(""); }} placeholder="Nome completo"
                 style={{ padding: "8px 10px", borderRadius: 6, border: "1px solid #444", background: "#13151a", color: "#e8eaed", fontSize: 12, outline: "none" }} />
-              <input value={newEmail} onChange={e => { setNewEmail(e.target.value); setCreateErr(""); }} placeholder="email@exemplo.com" type="email"
+              <input value={newUsername} onChange={e => { setNewUsername(e.target.value); setCreateErr(""); }} placeholder="nome.de.usuario" type="text" autoCapitalize="none" spellCheck={false}
                 style={{ padding: "8px 10px", borderRadius: 6, border: "1px solid #444", background: "#13151a", color: "#e8eaed", fontSize: 12, outline: "none" }} />
               <input value={newPass} onChange={e => { setNewPass(e.target.value); setCreateErr(""); }} placeholder="Senha temporária (mín. 4)" type="password"
                 style={{ padding: "8px 10px", borderRadius: 6, border: "1px solid #444", background: "#13151a", color: "#e8eaed", fontSize: 12, outline: "none" }} />
@@ -2666,7 +2661,7 @@ function AdminPanel({ users, onUpdateRole, onCreateUser, onDeleteUser, onClose, 
                       <span style={{ fontWeight: 700, fontSize: 14, color: "#e8eaed" }}>{u.name}</span>
                       {isCurrentUser && <span style={{ fontSize: 9, color: "#6c5ce7", fontWeight: 600, background: "rgba(108,92,231,.15)", padding: "1px 6px", borderRadius: 8 }}>Você</span>}
                     </div>
-                    <div style={{ fontSize: 11, color: "#778ca3" }}>{u.email}</div>
+                    <div style={{ fontSize: 11, color: "#778ca3" }}>@{u.username}</div>
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <RoleBadge role={u.role} />
@@ -2741,7 +2736,7 @@ const DEPARTMENTS = ["Operações", "Vendas", "Marketing", "Financeiro", "Logís
 
 function ProfileEditor({ userData, onSave, onClose, allUsers }) {
   const [name, setName] = useState(userData.name || "");
-  const [email, setEmail] = useState(userData.email || "");
+  const [username, setUsername] = useState(userData.username || "");
   const [phone, setPhone] = useState(userData.phone || "");
   const [department, setDepartment] = useState(userData.department || "");
   const [bio, setBio] = useState(userData.bio || "");
@@ -2757,9 +2752,10 @@ function ProfileEditor({ userData, onSave, onClose, allUsers }) {
   const handleSave = async () => {
     setError("");
     if (!name.trim()) { setError("Nome é obrigatório"); return; }
-    if (!email.trim() || !email.includes("@")) { setError("E-mail inválido"); return; }
-    const emailTaken = allUsers.find(u => u.email.toLowerCase() === email.toLowerCase().trim() && u.name !== userData.name);
-    if (emailTaken) { setError("Este e-mail já está em uso por " + emailTaken.name); return; }
+    const un = username.trim().toLowerCase();
+    if (!USERNAME_RE.test(un)) { setError("Usuário deve ter 3 a 20 caracteres (letras, números, . _ -)"); return; }
+    const userTaken = allUsers.find(u => (u.username || "").toLowerCase() === un && u.name !== userData.name);
+    if (userTaken) { setError("Este nome de usuário já está em uso por " + userTaken.name); return; }
 
     if (showPassSection && newPass) {
       if (!currentPass) { setError("Digite a senha atual"); return; }
@@ -2767,13 +2763,13 @@ function ProfileEditor({ userData, onSave, onClose, allUsers }) {
       if (newPass !== confirmPass) { setError("As senhas não coincidem"); return; }
 
       // Verify current password via API
-      const check = await apiCall("/auth/login", { method: "POST", body: JSON.stringify({ email: userData.email, password: currentPass }) });
+      const check = await apiCall("/auth/login", { method: "POST", body: JSON.stringify({ username: userData.username, password: currentPass }) });
       if (!check || !check.token) { setError("Senha atual incorreta"); return; }
     }
 
     onSave({
       name: name.trim(),
-      email: email.trim(),
+      username: un,
       phone: phone.trim(),
       department,
       bio: bio.trim(),
@@ -2804,7 +2800,7 @@ function ProfileEditor({ userData, onSave, onClose, allUsers }) {
             <div style={{ flex: 1 }}>
               <div style={{ fontWeight: 800, fontSize: 20, color: "#e8eaed", marginBottom: 2 }}>{name || "Seu nome"}</div>
               <div style={{ fontSize: 12, color: "#778ca3", display: "flex", alignItems: "center", gap: 6 }}>
-                {email || "email@exemplo.com"}
+                {username ? `@${username}` : "@usuario"}
                 <RoleBadge role={userData.role} small />
               </div>
               {department && <div style={{ fontSize: 11, color: "#556", marginTop: 2 }}>📍 {department}</div>}
@@ -2832,8 +2828,9 @@ function ProfileEditor({ userData, onSave, onClose, allUsers }) {
                 <input value={name} onChange={e => setName(e.target.value)} style={{ width: "100%", padding: "11px 14px", borderRadius: 10, border: "1px solid #333", background: "#13151a", color: "#e8eaed", fontSize: 14, outline: "none", boxSizing: "border-box" }} />
               </div>
               <div>
-                <label style={{ fontSize: 12, fontWeight: 600, color: "#778ca3", display: "block", marginBottom: 5 }}>E-mail</label>
-                <input value={email} onChange={e => setEmail(e.target.value)} type="email" style={{ width: "100%", padding: "11px 14px", borderRadius: 10, border: "1px solid #333", background: "#13151a", color: "#e8eaed", fontSize: 14, outline: "none", boxSizing: "border-box" }} />
+                <label style={{ fontSize: 12, fontWeight: 600, color: "#778ca3", display: "block", marginBottom: 5 }}>Nome de usuário</label>
+                <input value={username} onChange={e => setUsername(e.target.value)} type="text" autoComplete="username" autoCapitalize="none" spellCheck={false} style={{ width: "100%", padding: "11px 14px", borderRadius: 10, border: "1px solid #333", background: "#13151a", color: "#e8eaed", fontSize: 14, outline: "none", boxSizing: "border-box" }} />
+                <div style={{ fontSize: 10, color: "#556", marginTop: 4 }}>Usado para entrar no sistema, junto com a senha.</div>
               </div>
               <div>
                 <label style={{ fontSize: 12, fontWeight: 600, color: "#778ca3", display: "block", marginBottom: 5 }}>Telefone</label>
@@ -2951,87 +2948,30 @@ function ProfileEditor({ userData, onSave, onClose, allUsers }) {
 function LoginScreen({ onLogin }) {
   const [mode, setMode] = useState("login"); // "login" | "signup"
   const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPass, setConfirmPass] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [showPass, setShowPass] = useState(false);
   const [focusName, setFocusName] = useState(false);
-  const [focusEmail, setFocusEmail] = useState(false);
+  const [focusUser, setFocusUser] = useState(false);
   const [focusPass, setFocusPass] = useState(false);
   const [focusConfirm, setFocusConfirm] = useState(false);
-  const [googleLoading, setGoogleLoading] = useState(false);
-  const googleBtnRef = useRef(null);
   const isSignup = mode === "signup";
-
-  // Load Google Identity Services
-  useEffect(() => {
-    let cancelled = false;
-    async function initGoogle() {
-      // Fetch client ID from server
-      try {
-        const config = await apiCall("/config");
-        if (cancelled || !config?.googleClientId) return;
-        window.GOOGLE_CLIENT_ID = config.googleClientId;
-      } catch { return; }
-      
-      const clientId = window.GOOGLE_CLIENT_ID;
-      if (!clientId) return;
-
-      const script = document.createElement("script");
-      script.src = "https://accounts.google.com/gsi/client";
-      script.async = true;
-      script.onload = () => {
-        if (cancelled || !window.google || !googleBtnRef.current) return;
-        window.google.accounts.id.initialize({
-          client_id: clientId,
-          callback: handleGoogleResponse,
-        });
-        window.google.accounts.id.renderButton(googleBtnRef.current, {
-          theme: "filled_black", size: "large", width: 356, text: "signin_with", shape: "pill", locale: "pt-BR",
-        });
-      };
-      document.head.appendChild(script);
-    }
-    initGoogle();
-    return () => { cancelled = true; };
-  }, []);
-
-  const handleGoogleResponse = async (response) => {
-    if (!response.credential) return;
-    setGoogleLoading(true); setError("");
-    try {
-      const data = await apiCall("/auth/google", { method: "POST", body: JSON.stringify({ credential: response.credential }) });
-      if (data && data.token) {
-        setToken(data.token);
-        onLogin(data.user);
-      } else { setError("Falha ao autenticar com Google"); }
-    } catch { setError("Erro ao conectar com Google"); }
-    setGoogleLoading(false);
-  };
-
-  // Manual Google login (fallback button when GSI script hasn't loaded)
-  const handleGoogleManual = () => {
-    const GOOGLE_CLIENT_ID = window.GOOGLE_CLIENT_ID || "";
-    if (!GOOGLE_CLIENT_ID) { setError("Google Login não configurado. Configure GOOGLE_CLIENT_ID."); return; }
-    // Trigger Google One Tap
-    if (window.google) {
-      window.google.accounts.id.prompt();
-    }
-  };
 
   const handleSubmit = async () => {
     if (isSignup) {
-      if (!name.trim() || !email.trim() || !password.trim()) { setError("Preencha todos os campos"); return; }
+      if (!name.trim() || !username.trim() || !password.trim()) { setError("Preencha todos os campos"); return; }
       if (name.trim().length < 2) { setError("Nome muito curto"); return; }
+      if (!USERNAME_RE.test(username.trim())) { setError("Usuário deve ter 3 a 20 caracteres (letras, números, . _ -)"); return; }
       if (password.length < 6) { setError("Senha deve ter pelo menos 6 caracteres"); return; }
       if (password !== confirmPass) { setError("As senhas não coincidem"); return; }
       setLoading(true); setError("");
       try {
         const res = await fetch(`${API_URL}/api/auth/register`, {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: name.trim(), email: email.trim(), password }),
+          body: JSON.stringify({ name: name.trim(), username: username.trim().toLowerCase(), password }),
         });
         const data = await res.json();
         if (!res.ok) { setError(data.error || "Falha ao criar conta"); setLoading(false); return; }
@@ -3041,17 +2981,17 @@ function LoginScreen({ onLogin }) {
       setLoading(false);
       return;
     }
-    if (!email.trim() || !password.trim()) { setError("Preencha todos os campos"); return; }
+    if (!username.trim() || !password.trim()) { setError("Preencha todos os campos"); return; }
     setLoading(true); setError("");
     try {
-      const data = await apiCall("/auth/login", { method: "POST", body: JSON.stringify({ email: email.trim(), password }) });
+      const data = await apiCall("/auth/login", { method: "POST", body: JSON.stringify({ username: username.trim().toLowerCase(), password }) });
       if (data && data.token) {
         setToken(data.token);
         onLogin(data.user);
       } else {
-        setError("E-mail ou senha incorretos");
+        setError("Usuário ou senha incorretos");
       }
-    } catch { setError("E-mail ou senha incorretos"); }
+    } catch { setError("Usuário ou senha incorretos"); }
     setLoading(false);
   };
 
@@ -3098,16 +3038,16 @@ function LoginScreen({ onLogin }) {
             </div>
           )}
 
-          {/* Email */}
+          {/* Nome de usuário */}
           <div style={{ marginBottom: 18 }}>
-            <label style={{ fontSize: 12, fontWeight: 600, color: focusEmail ? "#6c5ce7" : "#778ca3", display: "block", marginBottom: 6, transition: "color .2s" }}>E-mail</label>
+            <label style={{ fontSize: 12, fontWeight: 600, color: focusUser ? "#6c5ce7" : "#778ca3", display: "block", marginBottom: 6, transition: "color .2s" }}>Nome de usuário</label>
             <div style={{ position: "relative" }}>
-              <div style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", color: focusEmail ? "#6c5ce7" : "#556" }}>
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>
+              <div style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", color: focusUser ? "#6c5ce7" : "#556" }}>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
               </div>
-              <input value={email} onChange={e => { setEmail(e.target.value); setError(""); }} onFocus={() => setFocusEmail(true)} onBlur={() => setFocusEmail(false)} onKeyDown={e => e.key === "Enter" && handleSubmit()}
-                placeholder="seu@email.com" type="email"
-                style={{ width: "100%", padding: "13px 14px 13px 42px", borderRadius: 12, border: `2px solid ${focusEmail ? "#6c5ce7" : error ? "#e2445c" : "#333"}`, background: "#13151a", color: "#e8eaed", fontSize: 14, outline: "none", transition: "border-color .2s", boxSizing: "border-box" }} />
+              <input value={username} onChange={e => { setUsername(e.target.value); setError(""); }} onFocus={() => setFocusUser(true)} onBlur={() => setFocusUser(false)} onKeyDown={e => e.key === "Enter" && handleSubmit()}
+                placeholder="seu.usuario" type="text" autoComplete="username" autoCapitalize="none" autoCorrect="off" spellCheck={false}
+                style={{ width: "100%", padding: "13px 14px 13px 42px", borderRadius: 12, border: `2px solid ${focusUser ? "#6c5ce7" : error ? "#e2445c" : "#333"}`, background: "#13151a", color: "#e8eaed", fontSize: 14, outline: "none", transition: "border-color .2s", boxSizing: "border-box" }} />
             </div>
           </div>
 
@@ -3176,38 +3116,6 @@ function LoginScreen({ onLogin }) {
             )}
           </div>
 
-          {/* Divider */}
-          {!isSignup && (
-          <div style={{ display: "flex", alignItems: "center", gap: 12, margin: "20px 0" }}>
-            <div style={{ flex: 1, height: 1, background: "#333" }} />
-            <span style={{ fontSize: 12, color: "#556", fontWeight: 500 }}>ou</span>
-            <div style={{ flex: 1, height: 1, background: "#333" }} />
-          </div>
-          )}
-
-          {/* Google Sign-In */}
-          {!isSignup && (
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
-            {/* Google Identity Services rendered button */}
-            <div ref={googleBtnRef} style={{ minHeight: 44 }} />
-            
-            {/* Fallback Google button (if script not loaded) */}
-            {!window.google && (
-              <button onClick={handleGoogleManual} disabled={googleLoading}
-                style={{ width: "100%", padding: "12px", borderRadius: 12, border: "1px solid #333", background: "#1e2028", color: "#e8eaed", fontSize: 14, fontWeight: 600, cursor: googleLoading ? "wait" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 10, transition: "all .2s" }}
-                onMouseEnter={e => e.currentTarget.style.background = "#282b34"} onMouseLeave={e => e.currentTarget.style.background = "#1e2028"}>
-                {googleLoading ? (
-                  <><div style={{ width: 16, height: 16, border: "2px solid rgba(255,255,255,.3)", borderTop: "2px solid #fff", borderRadius: "50%", animation: "spin .6s linear infinite" }} /> Conectando...</>
-                ) : (
-                  <>
-                    <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
-                    Entrar com Google
-                  </>
-                )}
-              </button>
-            )}
-          </div>
-          )}
         </div>
 
       </div>
@@ -3511,18 +3419,19 @@ function RenameBoardModal({ target, onClose, onSave }) {
 // ─── CREATE USER MODAL (admin) ───────────────────────────────────────────────
 function CreateUserModal({ onClose, onCreate }) {
   const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [role, setRole] = useState("collaborator");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [ok, setOk] = useState(false);
   const submit = async () => {
-    if (!name.trim() || !email.trim() || !password) { setErr("Preencha todos os campos"); return; }
+    if (!name.trim() || !username.trim() || !password) { setErr("Preencha todos os campos"); return; }
+    if (!USERNAME_RE.test(username.trim())) { setErr("Usuário deve ter 3 a 20 caracteres (letras, números, . _ -)"); return; }
     if (password.length < 4) { setErr("Senha deve ter pelo menos 4 caracteres"); return; }
     setBusy(true); setErr("");
     try {
-      const res = await onCreate({ name: name.trim(), email: email.trim(), password, role });
+      const res = await onCreate({ name: name.trim(), username: username.trim().toLowerCase(), password, role });
       if (res?.error) { setErr(res.error); return; }
       setOk(true);
       setTimeout(() => onClose(), 900);
@@ -3547,9 +3456,10 @@ function CreateUserModal({ onClose, onCreate }) {
         </div>
 
         <div style={{ marginBottom: 12 }}>
-          <label style={{ fontSize: 11, color: "#778ca3", fontWeight: 600, display: "block", marginBottom: 4 }}>E-mail</label>
-          <input value={email} onChange={e => { setEmail(e.target.value); setErr(""); }} placeholder="usuario@empresa.com" type="email"
+          <label style={{ fontSize: 11, color: "#778ca3", fontWeight: 600, display: "block", marginBottom: 4 }}>Nome de usuário</label>
+          <input value={username} onChange={e => { setUsername(e.target.value); setErr(""); }} placeholder="nome.de.usuario" type="text" autoCapitalize="none" spellCheck={false}
             style={{ width: "100%", padding: "9px 11px", borderRadius: 7, border: "1px solid #2a2d35", background: "#13151a", color: "#e8eaed", fontSize: 13, outline: "none", boxSizing: "border-box" }} />
+          <div style={{ fontSize: 10, color: "#778ca3", marginTop: 4 }}>É com ele que o usuário entra no sistema.</div>
         </div>
 
         <div style={{ marginBottom: 12 }}>
@@ -3975,8 +3885,8 @@ function Dashboard({ currentUser, onLogout }) {
     if (u) { setUsers(prev => prev.map(x => x.name === userName ? { ...x, role: newRole } : x)); apiCall(`/users/${u.id}/role`, { method: "PUT", body: JSON.stringify({ role: newRole }) }); }
   };
 
-  const apiCreateUser = async ({ name, email, password, role }) => {
-    const res = await apiCall('/users', { method: 'POST', body: JSON.stringify({ name, email, password, role }), returnError: true });
+  const apiCreateUser = async ({ name, username, password, role }) => {
+    const res = await apiCall('/users', { method: 'POST', body: JSON.stringify({ name, username, password, role }), returnError: true });
     if (!res || res.error) return { error: res?.error || 'Erro desconhecido' };
     setUsers(prev => [...prev, res].sort((a, b) => a.name.localeCompare(b.name)));
     if (res.avatar_color) PEOPLE_COLORS[res.name] = res.avatar_color;
@@ -4002,7 +3912,7 @@ function Dashboard({ currentUser, onLogout }) {
   const apiUpdateUserProfile = (profileData) => {
     setUsers(prev => prev.map(u => u.name === currentUser.name ? { ...u, ...profileData } : u));
     if (profileData.avatarColor) PEOPLE_COLORS[profileData.name] = profileData.avatarColor;
-    apiCall(`/users/${currentUser.id}`, { method: "PUT", body: JSON.stringify({ name: profileData.name, email: profileData.email, phone: profileData.phone, department: profileData.department, bio: profileData.bio, avatar_color: profileData.avatarColor, password: profileData.password !== "******" && profileData.password ? profileData.password : undefined }) });
+    apiCall(`/users/${currentUser.id}`, { method: "PUT", body: JSON.stringify({ name: profileData.name, username: profileData.username, phone: profileData.phone, department: profileData.department, bio: profileData.bio, avatar_color: profileData.avatarColor, password: profileData.password !== "******" && profileData.password ? profileData.password : undefined }) });
   };
 
   const apiDeleteUpdate = (updateId) => {
@@ -4111,7 +4021,7 @@ function Dashboard({ currentUser, onLogout }) {
                       <span style={{ fontWeight: 700, fontSize: 14, color: "#e8eaed" }}>{currentUser.name}</span>
                       <RoleBadge role={currentUserData.role} small />
                     </div>
-                    <div style={{ fontSize: 11, color: "#778ca3" }}>{currentUserData.email}</div>
+                    <div style={{ fontSize: 11, color: "#778ca3" }}>@{currentUserData.username}</div>
                   </div>
                 </div>
               </div>

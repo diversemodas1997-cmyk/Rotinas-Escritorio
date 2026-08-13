@@ -21,7 +21,7 @@ export const api = {
   clearToken() { authToken = null; localStorage.removeItem('rotina_token'); },
   getToken() { return authToken; },
 
-  login: (email, password) => request('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
+  login: (username, password) => request('/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) }),
   me: () => request('/auth/me'),
 
   getUsers: () => request('/users'),

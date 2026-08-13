@@ -15,7 +15,6 @@ const { validateRule } = require('./automations/schema');
 const app = express();
 const PORT = process.env.PORT || 3001;
 const JWT_SECRET = process.env.JWT_SECRET || 'rotina-escritorio-secret-2026';
-const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
 const BACKUP_TOKEN = process.env.BACKUP_TOKEN || '';
 
 app.use(cors());
@@ -28,7 +27,8 @@ db.pragma('foreign_keys = ON');
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, email TEXT UNIQUE NOT NULL,
+    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+    username TEXT NOT NULL UNIQUE COLLATE NOCASE, email TEXT,
     password TEXT NOT NULL, role TEXT DEFAULT 'collaborator', phone TEXT DEFAULT '',
     department TEXT DEFAULT '', bio TEXT DEFAULT '', avatar_color TEXT DEFAULT '#888',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -88,6 +88,64 @@ db.exec(`
     PRIMARY KEY (rule_id, target_type, target_id, date_key)
   );
 `);
+
+// ===== Usernames =====
+// Login identifier: 3-20 chars, letters/digits/dot/underscore/hyphen, case-insensitive.
+const USERNAME_RE = /^[a-zA-Z0-9._-]{3,20}$/;
+const normalizeUsername = (v) => String(v || '').trim().toLowerCase();
+function slugifyUsername(v) {
+  // NFD splits accented letters into base + combining mark; the allowlist below
+  // drops the marks, so "João" becomes "joao".
+  return String(v || '')
+    .normalize('NFD')
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]/g, '')
+    .slice(0, 20);
+}
+
+// Login is by username only (no email). Older databases had `email` as the
+// UNIQUE NOT NULL login field, so the table has to be rebuilt to add `username`
+// and relax `email` to an optional profile field.
+(function migrateUsersUsername() {
+  const cols = db.prepare('PRAGMA table_info(users)').all().map(c => c.name);
+  if (cols.includes('username')) return;
+
+  const rows = db.prepare('SELECT id, name, email FROM users').all();
+  const taken = new Set();
+  const assigned = rows.map(r => {
+    const local = String(r.email || '').split('@')[0];
+    let base = slugifyUsername(local) || slugifyUsername(r.name) || `user${r.id}`;
+    if (base.length < 3) base = `${base}${r.id}`;
+    let u = base, n = 1;
+    while (taken.has(u)) u = `${base}${++n}`;
+    taken.add(u);
+    return { id: r.id, username: u, name: r.name };
+  });
+
+  db.pragma('foreign_keys = OFF');
+  db.transaction(() => {
+    db.exec(`
+      CREATE TABLE users_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+        username TEXT NOT NULL UNIQUE COLLATE NOCASE, email TEXT,
+        password TEXT NOT NULL, role TEXT DEFAULT 'collaborator', phone TEXT DEFAULT '',
+        department TEXT DEFAULT '', bio TEXT DEFAULT '', avatar_color TEXT DEFAULT '#888',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+      INSERT INTO users_new (id,name,username,email,password,role,phone,department,bio,avatar_color,created_at)
+        SELECT id,name,'user_' || id,email,password,role,phone,department,bio,avatar_color,created_at FROM users;
+    `);
+    const upd = db.prepare('UPDATE users_new SET username=? WHERE id=?');
+    assigned.forEach(a => upd.run(a.username, a.id));
+    db.exec('DROP TABLE users; ALTER TABLE users_new RENAME TO users;');
+  })();
+  db.pragma('foreign_keys = ON');
+
+  if (assigned.length) {
+    console.log('🔑 Login agora e por nome de usuario. Usuarios migrados:');
+    assigned.forEach(a => console.log(`   ${a.name} -> ${a.username}`));
+  }
+})();
 
 // Non-destructive migration: add scope/parent_column_id to existing databases
 (function migrateColumnsConfig() {
@@ -231,10 +289,10 @@ function seedDatabase() {
       .run('board_operacoes', 'Operações', '📋', '#6c5ce7', 0, 'folder_operacionais');
   }
   const hash = bcrypt.hashSync('123456', 10);
-  const iu = db.prepare('INSERT INTO users (name,email,password,role,avatar_color) VALUES (?,?,?,?,?)');
-  [['Gabriela','gabriela@rotina.com',hash,'collaborator','#ff642e'],['Camila','camila@rotina.com',hash,'collaborator','#fdab3d'],
-   ['Junior','junior@rotina.com',hash,'admin','#a25ddc'],['Ana','ana@rotina.com',hash,'collaborator','#00c875'],
-   ['Pedro','pedro@rotina.com',hash,'collaborator','#579bfc'],['Lucas','lucas@rotina.com',hash,'collaborator','#e2445c']].forEach(u=>iu.run(...u));
+  const iu = db.prepare('INSERT INTO users (name,username,password,role,avatar_color) VALUES (?,?,?,?,?)');
+  [['Gabriela','gabriela',hash,'collaborator','#ff642e'],['Camila','camila',hash,'collaborator','#fdab3d'],
+   ['Junior','junior',hash,'admin','#a25ddc'],['Ana','ana',hash,'collaborator','#00c875'],
+   ['Pedro','pedro',hash,'collaborator','#579bfc'],['Lucas','lucas',hash,'collaborator','#e2445c']].forEach(u=>iu.run(...u));
 
   const ic = db.prepare('INSERT INTO columns_config (id,name,type,field,built_in,is_deadline,width,sort_order) VALUES (?,?,?,?,?,?,?,?)');
   [['col_resp','Responsável','people','responsible',1,0,'110px',0],['col_status','Status','status','status',1,0,'120px',1],
@@ -446,80 +504,55 @@ const uploadHandler = multer({
   limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB por arquivo
 });
 
-app.post('/api/auth/login',(req,res)=>{const{email,password}=req.body;const u=db.prepare('SELECT * FROM users WHERE email=?').get(email?.toLowerCase?.());if(!u||!bcrypt.compareSync(password,u.password))return res.status(401).json({error:'Credenciais inválidas'});const token=jwt.sign({id:u.id,name:u.name,email:u.email,role:u.role},JWT_SECRET,{expiresIn:'7d'});res.json({token,user:{id:u.id,name:u.name,email:u.email,role:u.role,phone:u.phone,department:u.department,bio:u.bio,avatar_color:u.avatar_color}});});
+// Login: username + password only. `email` is still accepted in the body so an
+// old cached client keeps working (matched against username or legacy email).
+app.post('/api/auth/login', (req, res) => {
+  const { username, email, password } = req.body || {};
+  const id = normalizeUsername(username ?? email);
+  if (!id || !password) return res.status(400).json({ error: 'Usuário e senha são obrigatórios' });
+  const u = db.prepare('SELECT * FROM users WHERE username=? OR lower(email)=?').get(id, id);
+  if (!u || !bcrypt.compareSync(password, u.password)) return res.status(401).json({ error: 'Credenciais inválidas' });
+  const token = jwt.sign({ id: u.id, name: u.name, username: u.username, role: u.role }, JWT_SECRET, { expiresIn: '7d' });
+  res.json({ token, user: { id: u.id, name: u.name, username: u.username, role: u.role, phone: u.phone, department: u.department, bio: u.bio, avatar_color: u.avatar_color } });
+});
 
 // Public self-registration. New users default to 'collaborator' and must be
 // promoted to 'admin' by an existing admin via /api/users/:id/role.
 app.post('/api/auth/register', (req, res) => {
-  const { name, email, password } = req.body || {};
-  if (!name || !email || !password) return res.status(400).json({ error: 'Nome, email e senha são obrigatórios' });
+  const { name, username, password } = req.body || {};
+  if (!name || !username || !password) return res.status(400).json({ error: 'Nome, usuário e senha são obrigatórios' });
   const trimmedName = String(name).trim();
-  const em = String(email).toLowerCase().trim();
+  const un = normalizeUsername(username);
   if (trimmedName.length < 2) return res.status(400).json({ error: 'Nome muito curto' });
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em)) return res.status(400).json({ error: 'Email inválido' });
+  if (!USERNAME_RE.test(un)) return res.status(400).json({ error: 'Usuário deve ter 3 a 20 caracteres (letras, números, . _ -)' });
   if (String(password).length < 6) return res.status(400).json({ error: 'Senha deve ter pelo menos 6 caracteres' });
-  if (db.prepare('SELECT id FROM users WHERE email=?').get(em)) return res.status(409).json({ error: 'Email já cadastrado' });
+  if (db.prepare('SELECT id FROM users WHERE username=?').get(un)) return res.status(409).json({ error: 'Nome de usuário já existe' });
   const colors = ['#ff642e','#fdab3d','#a25ddc','#00c875','#579bfc','#e2445c','#6c5ce7','#00ced1','#ff158a','#037f4c'];
   const color = colors[Math.floor(Math.random() * colors.length)];
   const hash = bcrypt.hashSync(password, 10);
-  const info = db.prepare('INSERT INTO users (name,email,password,role,avatar_color) VALUES (?,?,?,?,?)')
-    .run(trimmedName, em, hash, 'collaborator', color);
+  const info = db.prepare('INSERT INTO users (name,username,password,role,avatar_color) VALUES (?,?,?,?,?)')
+    .run(trimmedName, un, hash, 'collaborator', color);
   const u = db.prepare('SELECT * FROM users WHERE id=?').get(info.lastInsertRowid);
-  const token = jwt.sign({ id: u.id, name: u.name, email: u.email, role: u.role }, JWT_SECRET, { expiresIn: '7d' });
-  res.json({ token, user: { id: u.id, name: u.name, email: u.email, role: u.role, phone: u.phone || '', department: u.department || '', bio: u.bio || '', avatar_color: u.avatar_color } });
+  const token = jwt.sign({ id: u.id, name: u.name, username: u.username, role: u.role }, JWT_SECRET, { expiresIn: '7d' });
+  res.json({ token, user: { id: u.id, name: u.name, username: u.username, role: u.role, phone: u.phone || '', department: u.department || '', bio: u.bio || '', avatar_color: u.avatar_color } });
 });
 
-// Google OAuth - verify token and create/login user
-app.post('/api/auth/google', async (req, res) => {
-  const { credential } = req.body;
-  if (!credential) return res.status(400).json({ error: 'Token Google ausente' });
-  try {
-    // Decode the JWT from Google (the ID token)
-    const parts = credential.split('.');
-    const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString());
-    const { email, name, picture, sub: googleId } = payload;
-    if (!email) return res.status(400).json({ error: 'Email não encontrado no token' });
-    
-    // Check if user exists
-    let user = db.prepare('SELECT * FROM users WHERE email = ?').get(email.toLowerCase());
-    
-    if (!user) {
-      // Create new user from Google account
-      const colors = ['#ff642e','#fdab3d','#a25ddc','#00c875','#579bfc','#e2445c','#ff158a','#037f4c'];
-      const color = colors[Math.floor(Math.random() * colors.length)];
-      const hash = bcrypt.hashSync('google_' + googleId + '_' + Date.now(), 10);
-      db.prepare('INSERT INTO users (name, email, password, role, avatar_color) VALUES (?,?,?,?,?)')
-        .run(name || email.split('@')[0], email.toLowerCase(), hash, 'collaborator', color);
-      user = db.prepare('SELECT * FROM users WHERE email = ?').get(email.toLowerCase());
-    }
-    
-    const token = jwt.sign({ id: user.id, name: user.name, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
-    res.json({ token, user: { id: user.id, name: user.name, email: user.email, role: user.role, phone: user.phone || '', department: user.department || '', bio: user.bio || '', avatar_color: user.avatar_color || '#888' } });
-  } catch (err) {
-    console.error('Google auth error:', err.message);
-    res.status(401).json({ error: 'Token Google inválido' });
-  }
-});
-app.get('/api/auth/me',auth,(req,res)=>{const u=db.prepare('SELECT id,name,email,role,phone,department,bio,avatar_color,created_at FROM users WHERE id=?').get(req.user.id);if(!u)return res.status(404).json({error:'Não encontrado'});res.json(u);});
+app.get('/api/auth/me',auth,(req,res)=>{const u=db.prepare('SELECT id,name,username,role,phone,department,bio,avatar_color,created_at FROM users WHERE id=?').get(req.user.id);if(!u)return res.status(404).json({error:'Não encontrado'});res.json(u);});
 
-// Public config endpoint (no auth needed)
-app.get('/api/config', (req, res) => {
-  res.json({ googleClientId: GOOGLE_CLIENT_ID });
-});
-
-app.get('/api/users',auth,(req,res)=>res.json(db.prepare('SELECT id,name,email,role,phone,department,bio,avatar_color FROM users ORDER BY name').all()));
+app.get('/api/users',auth,(req,res)=>res.json(db.prepare('SELECT id,name,username,role,phone,department,bio,avatar_color FROM users ORDER BY name').all()));
 app.post('/api/users',auth,adminOnly,(req,res)=>{
-  const { name, email, password, role } = req.body || {};
-  if (!name || !email || !password) return res.status(400).json({ error: 'Nome, email e senha são obrigatórios' });
+  const { name, username, password, role } = req.body || {};
+  if (!name || !username || !password) return res.status(400).json({ error: 'Nome, usuário e senha são obrigatórios' });
   if (password.length < 4) return res.status(400).json({ error: 'Senha deve ter pelo menos 4 caracteres' });
-  const em = email.toLowerCase().trim();
-  if (db.prepare('SELECT id FROM users WHERE email=?').get(em)) return res.status(409).json({ error: 'Email já cadastrado' });
+  const un = normalizeUsername(username);
+  if (!USERNAME_RE.test(un)) return res.status(400).json({ error: 'Usuário deve ter 3 a 20 caracteres (letras, números, . _ -)' });
+  if (db.prepare('SELECT id FROM users WHERE username=?').get(un)) return res.status(409).json({ error: 'Nome de usuário já existe' });
   const r = role === 'admin' ? 'admin' : 'collaborator';
   const colors = ['#ff642e','#fdab3d','#a25ddc','#00c875','#579bfc','#e2445c','#6c5ce7','#00ced1'];
   const color = colors[Math.floor(Math.random() * colors.length)];
   const hash = bcrypt.hashSync(password, 10);
-  const info = db.prepare('INSERT INTO users (name,email,password,role,avatar_color) VALUES (?,?,?,?,?)').run(name.trim(), em, hash, r, color);
-  res.json(db.prepare('SELECT id,name,email,role,phone,department,bio,avatar_color FROM users WHERE id=?').get(info.lastInsertRowid));
+  const info = db.prepare('INSERT INTO users (name,username,password,role,avatar_color) VALUES (?,?,?,?,?)').run(name.trim(), un, hash, r, color);
+  res.json(db.prepare('SELECT id,name,username,role,phone,department,bio,avatar_color FROM users WHERE id=?').get(info.lastInsertRowid));
 });
 app.delete('/api/users/:id',auth,adminOnly,(req,res)=>{
   const id = parseInt(req.params.id);
@@ -561,7 +594,28 @@ app.delete('/api/users/:id',auth,adminOnly,(req,res)=>{
   tx();
   res.json({ success: true });
 });
-app.put('/api/users/:id',auth,(req,res)=>{const{id}=req.params;if(req.user.id!==parseInt(id)&&req.user.role!=='admin')return res.status(403).json({error:'Sem permissão'});const{name,email,phone,department,bio,avatar_color,password}=req.body;const u=[];const p=[];if(name){u.push('name=?');p.push(name);}if(email){u.push('email=?');p.push(email.toLowerCase());}if(phone!==undefined){u.push('phone=?');p.push(phone);}if(department!==undefined){u.push('department=?');p.push(department);}if(bio!==undefined){u.push('bio=?');p.push(bio);}if(avatar_color){u.push('avatar_color=?');p.push(avatar_color);}if(password){u.push('password=?');p.push(bcrypt.hashSync(password,10));}if(!u.length)return res.status(400).json({error:'Nada para atualizar'});p.push(id);db.prepare(`UPDATE users SET ${u.join(',')} WHERE id=?`).run(...p);res.json(db.prepare('SELECT id,name,email,role,phone,department,bio,avatar_color FROM users WHERE id=?').get(id));});
+app.put('/api/users/:id', auth, (req, res) => {
+  const { id } = req.params;
+  if (req.user.id !== parseInt(id) && req.user.role !== 'admin') return res.status(403).json({ error: 'Sem permissão' });
+  const { name, username, phone, department, bio, avatar_color, password } = req.body;
+  const u = []; const p = [];
+  if (name) { u.push('name=?'); p.push(name); }
+  if (username) {
+    const un = normalizeUsername(username);
+    if (!USERNAME_RE.test(un)) return res.status(400).json({ error: 'Usuário deve ter 3 a 20 caracteres (letras, números, . _ -)' });
+    if (db.prepare('SELECT id FROM users WHERE username=? AND id<>?').get(un, id)) return res.status(409).json({ error: 'Nome de usuário já existe' });
+    u.push('username=?'); p.push(un);
+  }
+  if (phone !== undefined) { u.push('phone=?'); p.push(phone); }
+  if (department !== undefined) { u.push('department=?'); p.push(department); }
+  if (bio !== undefined) { u.push('bio=?'); p.push(bio); }
+  if (avatar_color) { u.push('avatar_color=?'); p.push(avatar_color); }
+  if (password) { u.push('password=?'); p.push(bcrypt.hashSync(password, 10)); }
+  if (!u.length) return res.status(400).json({ error: 'Nada para atualizar' });
+  p.push(id);
+  db.prepare(`UPDATE users SET ${u.join(',')} WHERE id=?`).run(...p);
+  res.json(db.prepare('SELECT id,name,username,role,phone,department,bio,avatar_color FROM users WHERE id=?').get(id));
+});
 app.put('/api/users/:id/role',auth,adminOnly,(req,res)=>{const{role}=req.body;if(!['admin','collaborator'].includes(role))return res.status(400).json({error:'Cargo inválido'});const ac=db.prepare("SELECT COUNT(*) as c FROM users WHERE role='admin'").get().c;const t=db.prepare('SELECT role FROM users WHERE id=?').get(req.params.id);if(t?.role==='admin'&&role!=='admin'&&ac<=1)return res.status(400).json({error:'Precisa de 1 admin'});db.prepare('UPDATE users SET role=? WHERE id=?').run(role,req.params.id);res.json({success:true});});
 
 // ===== Folders =====
