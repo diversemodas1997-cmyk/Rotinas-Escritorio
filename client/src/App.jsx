@@ -3902,11 +3902,10 @@ function Dashboard({ currentUser, onLogout }) {
     }
     setNotifPopupEnabled(true);
   };
-  // Alerta sonoro de ~3 segundos, sintetizado na hora pela Web Audio API (sem
-  // arquivo externo). Em vez de um tom contínuo, um arpejo de sino: quatro
-  // notas de um acorde maior que entram em sequência e decaem naturalmente,
-  // como um carrilhão. Preenche os 3 segundos sem cansar o ouvido.
-  const ALARM_SECONDS = 3;
+  // Alerta sonoro curto: três toques de sino iguais, em sequência rápida —
+  // o padrão de notificação que se reconhece de imediato. Sintetizado na hora
+  // pela Web Audio API, sem arquivo externo.
+  const ALARM_SECONDS = 1.5;
   const alarmUntilRef = useRef(0);
   const playChime = () => {
     try {
@@ -3929,11 +3928,11 @@ function Dashboard({ currentUser, onLogout }) {
       filtro.Q.setValueAtTime(0.7, now);
       filtro.connect(ctx.destination);
 
-      // Saída geral: garante silêncio exato aos 3s, sem estalo, independente
-      // do quanto a cauda de cada nota ainda estivesse soando.
+      // Saída geral: garante silêncio exato no fim, sem estalo, independente
+      // do quanto a cauda do último toque ainda estivesse soando.
       const master = ctx.createGain();
       master.gain.setValueAtTime(1, now);
-      master.gain.setValueAtTime(1, now + ALARM_SECONDS - 0.3);
+      master.gain.setValueAtTime(1, now + ALARM_SECONDS - 0.2);
       master.gain.linearRampToValueAtTime(0.0001, now + ALARM_SECONDS);
       master.connect(filtro);
 
@@ -3964,18 +3963,13 @@ function Dashboard({ currentUser, onLogout }) {
         harm.start(t0); harm.stop(fim);
       };
 
-      // Toque de telefone: um motivo curto de Dó maior subindo, repetido duas
-      // vezes com um respiro no meio. É o padrão que o ouvido reconhece como
-      // "está tocando" — chama atenção sem o incômodo de um tom contínuo.
-      const DO5 = 523.25, MI5 = 659.25, SOL5 = 783.99, DO6 = 1046.50;
-      const toque = (inicio, volume, cauda) => {
-        nota(DO5, inicio + 0.00, 0.15 * volume, cauda);
-        nota(MI5, inicio + 0.15, 0.145 * volume, cauda);
-        nota(SOL5, inicio + 0.30, 0.14 * volume, cauda);
-        nota(DO6, inicio + 0.45, 0.135 * volume, cauda + 0.4);
-      };
-      toque(0.00, 1.0, 1.3);    // primeiro toque
-      toque(1.45, 0.85, 1.7);   // segundo, um pouco mais suave, cauda até os 3s
+      // Três toques iguais em sequência, espaçados o bastante para se ouvir um
+      // a um. O último decai por mais tempo, para o alerta terminar apagando
+      // em vez de ser cortado no meio.
+      const SOL5 = 783.99;
+      nota(SOL5, 0.00, 0.16, 0.45);
+      nota(SOL5, 0.30, 0.155, 0.45);
+      nota(SOL5, 0.60, 0.15, 0.85);
     } catch {}
   };
 
