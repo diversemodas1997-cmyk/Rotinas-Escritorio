@@ -71,7 +71,14 @@ const PRIORITY_RANK = PRIORITIES.reduce((acc, p, i) => ({ ...acc, [p]: i }), {})
 // Item sem prioridade definida (caso comum em subitens antigos) entra como
 // "Média", que é o que a coluna já exibe para eles.
 const priorityRank = (p) => (PRIORITY_RANK[p] !== undefined ? PRIORITY_RANK[p] : PRIORITY_RANK["Média"]);
-const sortByPriority = (list) => [...list].sort((a, b) => priorityRank(a.priority) - priorityRank(b.priority));
+// Critério de desempate dentro da mesma prioridade: ordem de execução. STATUSES
+// já está nessa sequência — não iniciado, em andamento, parado, feito — então o
+// próprio índice serve de peso. Status vazio conta como "Não iniciado", que é o
+// que a coluna exibe nesse caso.
+const STATUS_RANK = STATUSES.reduce((acc, s, i) => ({ ...acc, [s]: i }), {});
+const statusRank = (s) => (STATUS_RANK[s] !== undefined ? STATUS_RANK[s] : 0);
+const sortByPriority = (list) => [...list].sort((a, b) =>
+  priorityRank(a.priority) - priorityRank(b.priority) || statusRank(a.status) - statusRank(b.status));
 const PEOPLE_COLORS = { Gabriela: "#ff642e", Camila: "#fdab3d", Junior: "#a25ddc", Ana: "#00c875", Pedro: "#579bfc", Lucas: "#e2445c" };
 
 // Nome de usuário: mesma regra do servidor (3 a 20, letras/números/. _ -).
@@ -4122,10 +4129,11 @@ function Dashboard({ currentUser, onLogout }) {
   const apiUpdateTask = (tid, newTask) => {
     const current = tasks.find(t => t.id === tid);
     const updated = typeof newTask === "function" ? newTask(current || {}) : newTask;
-    // Prioridade alterada → o quadro se reorganiza sozinho: críticas no topo,
-    // depois altas, médias e baixas. A ordem manual dentro de cada faixa é
-    // preservada (sort estável), e a nova ordem é persistida para todo mundo.
-    const priorityChanged = !!current && updated && current.priority !== updated.priority;
+    // Prioridade ou status alterados → o quadro se reorganiza sozinho: críticas
+    // no topo e, dentro de cada prioridade, na ordem de execução. A ordem manual
+    // entre iguais é preservada (sort estável) e a nova ordem vai para o banco.
+    const priorityChanged = !!current && updated &&
+      (current.priority !== updated.priority || current.status !== updated.status);
     setTasks(prev => {
       const next = prev.map(t => t.id === tid ? (typeof newTask === "function" ? newTask(t) : newTask) : t);
       return priorityChanged ? sortByPriority(next) : next;
@@ -4141,9 +4149,10 @@ function Dashboard({ currentUser, onLogout }) {
     const parent = tasks.find(t => t.id === tid);
     const current = (parent?.subitems || []).find(s => s.id === sid);
     const subToSave = typeof newSub === "function" ? (current ? newSub(current) : {}) : newSub;
-    // Mesma regra das tarefas: mudou a prioridade, o bloco de subitens se
-    // reordena (crítica no topo) e a nova ordem vale para todos os usuários.
-    const priorityChanged = !!current && subToSave && current.priority !== subToSave.priority;
+    // Mesma regra das tarefas: mudou a prioridade ou o status, o bloco de
+    // subitens se reordena e a nova ordem vale para todos os usuários.
+    const priorityChanged = !!current && subToSave &&
+      (current.priority !== subToSave.priority || current.status !== subToSave.status);
     setTasks(prev => prev.map(t => {
       if (t.id !== tid) return t;
       const subs = t.subitems.map(s => s.id === sid ? (typeof newSub === "function" ? newSub(s) : newSub) : s);
