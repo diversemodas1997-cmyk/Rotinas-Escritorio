@@ -78,6 +78,7 @@ db.exec(`
     date TEXT NOT NULL, task_id TEXT NOT NULL, subitem_id TEXT,
     column_id TEXT NOT NULL, value REAL DEFAULT 0, responsible TEXT DEFAULT '[]',
     task_name TEXT DEFAULT '', subitem_name TEXT DEFAULT '', column_name TEXT DEFAULT '',
+    board_id TEXT,
     PRIMARY KEY (date, task_id, subitem_id, column_id)
   );
   CREATE TABLE IF NOT EXISTS settings (
@@ -157,6 +158,22 @@ db.exec(`
     PRIMARY KEY (board_id, user_id)
   );
 `);
+
+// Relatórios são por quadro: cada linha do histórico guarda de qual quadro veio.
+// Linhas antigas recebem o quadro da tarefa correspondente; as de tarefa já
+// excluída ficam sem quadro e não entram em nenhum relatório filtrado.
+(function migrateSnapshotBoard() {
+  const cols = db.prepare("PRAGMA table_info(daily_snapshots)").all().map(c => c.name);
+  if (cols.length && !cols.includes('board_id')) {
+    db.exec("ALTER TABLE daily_snapshots ADD COLUMN board_id TEXT");
+    const n = db.prepare(`
+      UPDATE daily_snapshots SET board_id = (SELECT board_id FROM tasks WHERE tasks.id = daily_snapshots.task_id)
+      WHERE board_id IS NULL
+    `).run().changes;
+    const orfas = db.prepare("SELECT COUNT(*) c FROM daily_snapshots WHERE board_id IS NULL").get().c;
+    console.log(`📊 Relatórios por quadro: ${n} registro(s) migrado(s)${orfas ? `, ${orfas} sem quadro (tarefa excluída)` : ''}`);
+  }
+})();
 
 // Quadro restrito: só quem está na lista de acesso enxerga, mesmo que seja
 // responsável por alguma tarefa dele. Padrão 0 = mantém o comportamento antigo.
@@ -382,14 +399,14 @@ function runDailyRollover() {
   const numericSubCols = db.prepare(
     "SELECT id, name, task_id FROM columns_config WHERE scope='subitem' AND type='number' AND (computed IS NULL OR computed='')"
   ).all();
-  const tasks = db.prepare('SELECT id, name, total_orders, total_cancellations, responsible FROM tasks').all();
+  const tasks = db.prepare('SELECT id, name, total_orders, total_cancellations, responsible, board_id FROM tasks').all();
   const taskById = new Map(tasks.map(t => [t.id, t]));
   const subitems = db.prepare('SELECT id, task_id, name, total, custom, responsible FROM subitems').all();
 
   const insSnap = db.prepare(
     `INSERT OR REPLACE INTO daily_snapshots
-     (date, task_id, subitem_id, column_id, value, responsible, task_name, subitem_name, column_name)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     (date, task_id, subitem_id, column_id, value, responsible, task_name, subitem_name, column_name, board_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
   const updSub = db.prepare('UPDATE subitems SET total=0, custom=? WHERE id=?');
   const updTask = db.prepare('UPDATE tasks SET total_orders=0, total_cancellations=0 WHERE id=?');
@@ -399,12 +416,13 @@ function runDailyRollover() {
     for (const s of subitems) {
       const t = taskById.get(s.task_id);
       const taskName = t?.name || '';
+      const boardId = t?.board_id || null;
       const resp = s.responsible || '[]';
       let custom = {};
       try { custom = JSON.parse(s.custom || '{}'); } catch {}
       // Built-in `total` field
       if (s.total && Number(s.total) !== 0) {
-        insSnap.run(last, s.task_id, s.id, '__total__', Number(s.total), resp, taskName, s.name, 'TOTAL');
+        insSnap.run(last, s.task_id, s.id, '__total__', Number(s.total), resp, taskName, s.name, 'TOTAL', boardId);
       }
       let customChanged = false;
       for (const col of numericSubCols) {
@@ -413,7 +431,7 @@ function runDailyRollover() {
         const v = custom[col.id];
         const num = typeof v === 'number' ? v : (v != null && v !== '' ? Number(v) : 0);
         if (num && !Number.isNaN(num)) {
-          insSnap.run(last, s.task_id, s.id, col.id, num, resp, taskName, s.name, col.name);
+          insSnap.run(last, s.task_id, s.id, col.id, num, resp, taskName, s.name, col.name, boardId);
         }
         if (col.id in custom) { delete custom[col.id]; customChanged = true; }
       }
@@ -424,10 +442,10 @@ function runDailyRollover() {
     // Snapshot + zero task totals
     for (const t of tasks) {
       if (t.total_orders && Number(t.total_orders) !== 0) {
-        insSnap.run(last, t.id, '', 'totalOrders', Number(t.total_orders), t.responsible || '[]', t.name, '', 'Pedidos');
+        insSnap.run(last, t.id, '', 'totalOrders', Number(t.total_orders), t.responsible || '[]', t.name, '', 'Pedidos', t.board_id || null);
       }
       if (t.total_cancellations && Number(t.total_cancellations) !== 0) {
-        insSnap.run(last, t.id, '', 'totalCancellations', Number(t.total_cancellations), t.responsible || '[]', t.name, '', 'Canc.');
+        insSnap.run(last, t.id, '', 'totalCancellations', Number(t.total_cancellations), t.responsible || '[]', t.name, '', 'Canc.', t.board_id || null);
       }
       if ((t.total_orders && Number(t.total_orders) !== 0) || (t.total_cancellations && Number(t.total_cancellations) !== 0)) {
         updTask.run(t.id);
@@ -1203,9 +1221,15 @@ app.get('/api/reports', auth, adminOnly, (req, res) => {
   } else {
     start = `${ref.slice(0,4)}-01-01`; end = `${ref.slice(0,4)}-12-31`;
   }
-  const rows = db.prepare(
-    'SELECT * FROM daily_snapshots WHERE date >= ? AND date <= ? ORDER BY date, task_id, subitem_id, column_id'
-  ).all(start, end);
+  // Relatório é por quadro: sem boardId volta o consolidado de todos, com
+  // boardId volta só o daquele quadro.
+  const boardId = req.query.boardId || null;
+  if (boardId && !db.prepare('SELECT id FROM boards WHERE id=?').get(boardId)) {
+    return res.status(404).json({ error: 'Quadro não encontrado' });
+  }
+  const rows = boardId
+    ? db.prepare('SELECT * FROM daily_snapshots WHERE date >= ? AND date <= ? AND board_id = ? ORDER BY date, task_id, subitem_id, column_id').all(start, end, boardId)
+    : db.prepare('SELECT * FROM daily_snapshots WHERE date >= ? AND date <= ? ORDER BY date, task_id, subitem_id, column_id').all(start, end);
 
   const byDay = {};
   const perUser = {};
@@ -1231,6 +1255,8 @@ app.get('/api/reports', auth, adminOnly, (req, res) => {
   }
   res.json({
     period, date: ref, start, end,
+    boardId,
+    boardName: boardId ? (db.prepare('SELECT name FROM boards WHERE id=?').get(boardId)?.name || null) : null,
     total,
     byDay: Object.entries(byDay).map(([date,value]) => ({ date, value })).sort((a,b) => a.date.localeCompare(b.date)),
     perUser: Object.entries(perUser).map(([name,value]) => ({ name, value: Math.round(value*100)/100 })).sort((a,b) => b.value - a.value),

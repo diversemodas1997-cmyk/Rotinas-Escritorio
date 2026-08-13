@@ -2420,7 +2420,7 @@ function LockedOverlay({ message = "Recurso restrito a administradores" }) {
 }
 
 // ─── ADMIN PANEL ─────────────────────────────────────────────────────────────
-function ReportsPanel({ onClose, fullscreen, onToggleFullscreen }) {
+function ReportsPanel({ onClose, fullscreen, onToggleFullscreen, boardId, boardName }) {
   const [period, setPeriod] = useState("day");
   const [date, setDate] = useState(() => {
     const n = new Date();
@@ -2433,12 +2433,14 @@ function ReportsPanel({ onClose, fullscreen, onToggleFullscreen }) {
   useEffect(() => {
     let alive = true;
     setLoading(true);
-    fetch(`${API_URL}/api/reports?period=${period}&date=${date}`, { headers: { Authorization: `Bearer ${getToken()}` } })
+    // Relatório é isolado por quadro: sempre pede o do quadro aberto.
+    const escopo = boardId ? `&boardId=${encodeURIComponent(boardId)}` : "";
+    fetch(`${API_URL}/api/reports?period=${period}&date=${date}${escopo}`, { headers: { Authorization: `Bearer ${getToken()}` } })
       .then(r => r.json())
       .then(d => { if (alive) { setData(d); setLoading(false); } })
       .catch(() => { if (alive) { setData({ error: true }); setLoading(false); } });
     return () => { alive = false; };
-  }, [period, date]);
+  }, [period, date, boardId]);
 
   const periods = [
     { key: "day", label: "Dia" }, { key: "week", label: "Semana" },
@@ -2467,9 +2469,11 @@ function ReportsPanel({ onClose, fullscreen, onToggleFullscreen }) {
           <div style={{ width: 36, height: 36, borderRadius: 8, background: "linear-gradient(135deg, #00c875, #579bfc)", display: "flex", alignItems: "center", justifyContent: "center" }}>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3v18h18"/><path d="M7 14l3-3 4 4 5-6"/></svg>
           </div>
-          <div style={{ flex: 1 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontWeight: 700, fontSize: 15, color: "#e8eaed" }}>Relatório Diário</div>
-            <div style={{ fontSize: 11, color: "#778ca3" }}>
+            <div style={{ fontSize: 11, color: "#778ca3", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {/* Deixa explícito o escopo: os números são só deste quadro. */}
+              {(boardName || d.boardName) && <span style={{ color: "#6c5ce7", fontWeight: 600 }}>{boardName || d.boardName} · </span>}
               {d.lastRolloverDate ? `Último fechamento: ${fmtBR(d.lastRolloverDate)}` : "Sem fechamentos ainda"}
             </div>
           </div>
@@ -4746,7 +4750,7 @@ function Dashboard({ currentUser, onLogout }) {
       }} onClose={() => setUpdatesTarget(null)} allPeople={allPeople} />}
       {showDrive && <GoogleDrivePanel onClose={() => setShowDrive(false)} />}
       {showAdminPanel && isAdmin && <AdminPanel users={users} onUpdateRole={apiUpdateUserRole} onCreateUser={apiCreateUser} onDeleteUser={apiDeleteUser} onClose={() => setShowAdminPanel(false)} currentUser={currentUser.name} currentUserId={currentUser.id} />}
-      {showReports && isAdmin && <ReportsPanel fullscreen={reportsFullscreen} onToggleFullscreen={() => setReportsFullscreen(f => !f)} onClose={() => { setShowReports(false); setReportsFullscreen(false); }} />}
+      {showReports && isAdmin && <ReportsPanel fullscreen={reportsFullscreen} onToggleFullscreen={() => setReportsFullscreen(f => !f)} onClose={() => { setShowReports(false); setReportsFullscreen(false); }} boardId={currentBoardId} boardName={(boards.find(b => b.id === currentBoardId) || {}).name} />}
       {showProfile && <ProfileEditor userData={currentUserData} onSave={apiUpdateUserProfile} onClose={() => setShowProfile(false)} allUsers={users} />}
       {showCreateUser && isAdmin && <CreateUserModal onClose={() => setShowCreateUser(false)} onCreate={apiCreateUser} />}
 
