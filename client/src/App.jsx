@@ -73,7 +73,7 @@ const REGISTERED_USERS = [
 
 const ROLE_CONFIG = {
   admin: { label: "Administrador", color: "#e2445c", icon: "👑", permissions: { editTasks: true, deleteTasks: true, addColumns: true, deleteColumns: true, manageUsers: true, manageAutomations: true, accessDrive: true, viewAllUpdates: true, exportData: true } },
-  collaborator: { label: "Colaborador", color: "#579bfc", icon: "👤", permissions: { editTasks: true, deleteTasks: false, addColumns: true, deleteColumns: false, manageUsers: false, manageAutomations: true, accessDrive: true, viewAllUpdates: false, exportData: false } },
+  collaborator: { label: "Colaborador", color: "#579bfc", icon: "👤", permissions: { editTasks: true, deleteTasks: true, addColumns: true, deleteColumns: false, manageUsers: false, manageAutomations: true, accessDrive: true, viewAllUpdates: false, exportData: false } },
 };
 
 const INITIAL_COLUMNS = [

@@ -420,6 +420,9 @@ function adminOnly(req,res,next){if(req.user.role!=='admin')return res.status(40
 // Gerenciar automações (criar inclusive com IA, executar, ligar/desligar, excluir) é
 // liberado para admin E colaborador (usuário comum). Espelha ROLE_CONFIG.manageAutomations no front.
 function canManageAutomations(req,res,next){if(!['admin','collaborator'].includes(req.user.role))return res.status(403).json({error:'Acesso restrito'});next();}
+// Criar e excluir tarefas é liberado para admin E colaborador (usuário comum).
+// Espelha ROLE_CONFIG.deleteTasks/editTasks no front.
+function canManageTasks(req,res,next){if(!['admin','collaborator'].includes(req.user.role))return res.status(403).json({error:'Acesso restrito'});next();}
 
 // Auth para arquivos: aceita token via header OU query param (?token=...).
 // O navegador nao envia Authorization header em <img src>, <a href> ou nova aba,
@@ -807,7 +810,7 @@ app.post('/api/tasks',auth,(req,res)=>{
 app.put('/api/tasks/:id',auth,(req,res)=>{const{name,status,priority,responsible,totalOrders,totalCancellations,custom}=req.body;const t=db.prepare('SELECT * FROM tasks WHERE id=?').get(req.params.id);if(!t)return res.status(404).json({error:'Não encontrada'});
   // Parent deadline is auto-managed by runDailyRollover; client value is ignored.
   db.prepare('UPDATE tasks SET name=?,status=?,priority=?,responsible=?,total_orders=?,total_cancellations=?,custom=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(name??t.name,status??t.status,priority??t.priority,responsible?JSON.stringify(responsible):t.responsible,totalOrders??t.total_orders,totalCancellations??t.total_cancellations,custom?JSON.stringify(custom):t.custom,req.params.id);res.json({success:true});});
-app.delete('/api/tasks/:id', auth, adminOnly, (req, res) => {
+app.delete('/api/tasks/:id', auth, canManageTasks, (req, res) => {
   const id = req.params.id;
   if (!db.prepare('SELECT id FROM tasks WHERE id=?').get(id)) return res.status(404).json({ error: 'Tarefa não encontrada' });
   // Subitems cascade via FK; we still need to manually clean updates (no FK).
