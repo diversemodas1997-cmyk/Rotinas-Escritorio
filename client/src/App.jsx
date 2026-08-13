@@ -55,11 +55,23 @@ function hasInFlightMutations() { return _inFlightMutations > 0; }
 function setToken(t) { _token = t; if (t) localStorage.setItem("rotina_token", t); else localStorage.removeItem("rotina_token"); }
 function getToken() { return _token; }
 
+// Assistente de bandeja do Windows (autostart/tray-helper.ps1): restaura e traz
+// a janela do quadro para a frente, o que a própria página não pode fazer.
+// Roda na máquina de cada usuário, só em loopback.
+const TRAY_HELPER_URL = "http://127.0.0.1:35010/attention";
+
 const ALL_PEOPLE = ["Gabriela", "Camila", "Junior", "Ana", "Pedro", "Lucas"];
 const STATUSES = ["Não iniciado", "Em andamento", "Parado", "Feito"];
 const PRIORITIES = ["Crítica", "Alta", "Média", "Baixa"];
 const STATUS_COLORS = { "Não iniciado": { bg: "#c4c4c4", text: "#333" }, "Em andamento": { bg: "#fdab3d", text: "#fff" }, "Parado": { bg: "#e2445c", text: "#fff" }, "Feito": { bg: "#00c875", text: "#fff" } };
 const PRIORITY_COLORS = { "Crítica": { bg: "#333", text: "#fff" }, "Alta": { bg: "#401694", text: "#fff" }, "Média": { bg: "#5559df", text: "#fff" }, "Baixa": { bg: "#579bfc", text: "#fff" } };
+// Ordem do quadro: crítica no topo, baixa no fim. Sort estável, então tarefas
+// de mesma prioridade mantêm a ordem manual em que o usuário as deixou.
+const PRIORITY_RANK = PRIORITIES.reduce((acc, p, i) => ({ ...acc, [p]: i }), {});
+// Item sem prioridade definida (caso comum em subitens antigos) entra como
+// "Média", que é o que a coluna já exibe para eles.
+const priorityRank = (p) => (PRIORITY_RANK[p] !== undefined ? PRIORITY_RANK[p] : PRIORITY_RANK["Média"]);
+const sortByPriority = (list) => [...list].sort((a, b) => priorityRank(a.priority) - priorityRank(b.priority));
 const PEOPLE_COLORS = { Gabriela: "#ff642e", Camila: "#fdab3d", Junior: "#a25ddc", Ana: "#00c875", Pedro: "#579bfc", Lucas: "#e2445c" };
 
 // Nome de usuário: mesma regra do servidor (3 a 20, letras/números/. _ -).
@@ -787,7 +799,7 @@ function UpdatesPanel({ itemName, updates = [], onAddUpdate, onEditUpdate, onDel
 }
 
 // ─── NOTIFICATION PANEL ──────────────────────────────────────────────────────
-function NotificationPanel({ tasks, currentUser, onClose, onOpenUpdates, soundEnabled, onToggleSound }) {
+function NotificationPanel({ tasks, currentUser, onClose, onOpenUpdates, soundEnabled, onToggleSound, popupEnabled, onTogglePopup, popupSupported, popupBlocked }) {
   const notifications = useMemo(() => {
     const notifs = [];
     tasks.forEach(task => {
@@ -833,6 +845,15 @@ function NotificationPanel({ tasks, currentUser, onClose, onOpenUpdates, soundEn
               title={soundEnabled ? "Som ativado — clique para silenciar" : "Som desativado — clique para ativar"}
               style={{ background: "transparent", border: "1px solid #3a3d45", borderRadius: 6, padding: "3px 8px", fontSize: 13, cursor: "pointer", color: soundEnabled ? "#fdab3d" : "#556", lineHeight: 1 }}>
               {soundEnabled ? "🔔" : "🔕"}
+            </button>
+          )}
+          {onTogglePopup && (
+            <button onClick={popupSupported ? onTogglePopup : undefined}
+              title={!popupSupported ? "Popup indisponível: o navegador só permite notificações em localhost ou https"
+                : popupBlocked ? "Notificações bloqueadas no navegador — clique para ver como liberar"
+                : popupEnabled ? "Popup do sistema ativado — clique para desativar" : "Popup do sistema desativado — clique para ativar"}
+              style={{ background: "transparent", border: "1px solid #3a3d45", borderRadius: 6, padding: "3px 8px", fontSize: 13, cursor: popupSupported ? "pointer" : "not-allowed", color: popupEnabled ? "#fdab3d" : "#556", lineHeight: 1, opacity: popupSupported ? 1 : 0.4 }}>
+              {popupEnabled ? "🖥️" : "🚫"}
             </button>
           )}
           <span style={{ fontSize: 12, color: "#778ca3" }}>{notifications.length} itens</span>
@@ -1118,11 +1139,31 @@ function InlineAddRow({ placeholder, onAdd, gridCols, cellBorder, cellStyle, acc
 }
 
 // ─── BOARD VIEW (Monday.com style) ───────────────────────────────────────────
-function BoardView({ tasks, setTasks, apiUpdateTask, apiUpdateSub, apiAddTask, apiDeleteTask, apiAddSubitem, search, allPeople, columns, setColumns, apiUpdateColumn, apiDeleteColumn, apiReorderColumns, apiReorderTasks, apiReorderSubitems, setShowAddCol, subColumns, setSubColumns, apiUpdateSubColumn, apiDeleteSubColumn, apiReorderSubColumns, setShowAddSubCol, setActiveSubColTaskId, onOpenUpdates, perms = {} }) {
+// Destaque de linha alterada: fica pulsando até o usuário clicar na linha.
+const HOT_BG = "#33290f";
+const HOT_ROW = { animation: "hotRow 1.5s ease-in-out infinite" };
+
+function BoardView({ tasks, setTasks, apiUpdateTask, apiUpdateSub, apiAddTask, apiDeleteTask, apiAddSubitem, search, allPeople, columns, setColumns, apiUpdateColumn, apiDeleteColumn, apiReorderColumns, apiReorderTasks, apiReorderSubitems, setShowAddCol, subColumns, setSubColumns, apiUpdateSubColumn, apiDeleteSubColumn, apiReorderSubColumns, setShowAddSubCol, setActiveSubColTaskId, onOpenUpdates, perms = {}, highlights = {}, onClearHighlight = () => {} }) {
   const [expanded, setExpanded] = useState({});
   const [selected, setSelected] = useState({});
   const [groupOpen, setGroupOpen] = useState(true);
   const [taskColWidth, setTaskColWidth] = useState(280);
+
+  // Subitem destacado precisa ficar visível: abre a tarefa pai automaticamente.
+  useEffect(() => {
+    const subIds = new Set(Object.keys(highlights).filter(k => k.startsWith("s:")).map(k => k.slice(2)));
+    if (subIds.size === 0) return;
+    setExpanded(prev => {
+      let next = prev;
+      tasks.forEach(t => {
+        if (!prev[t.id] && (t.subitems || []).some(s => subIds.has(s.id))) {
+          if (next === prev) next = { ...prev };
+          next[t.id] = true;
+        }
+      });
+      return next;
+    });
+  }, [highlights, tasks]);
 
   const filtered = useMemo(() => { if (!search) return tasks; const q = search.toLowerCase(); return tasks.filter(t => t.name.toLowerCase().includes(q) || (t.responsible || []).some(r => r.toLowerCase().includes(q)) || t.subitems.some(s => s.name.toLowerCase().includes(q))); }, [tasks, search]);
   const upTask = (tid, nt) => { if (apiUpdateTask) apiUpdateTask(tid, nt); else setTasks(prev => prev.map(t => t.id === tid ? (typeof nt === "function" ? nt(t) : nt) : t)); };
@@ -1213,6 +1254,9 @@ function BoardView({ tasks, setTasks, apiUpdateTask, apiUpdateSub, apiAddTask, a
             const dc = task.subitems.filter(s => s.status === "Feito").length;
             const subCount = task.subitems.length;
             const isDraggingTask = taskDrag.dragging === ti;
+            const hlKey = `t:${task.id}`;
+            const isHot = !!highlights[hlKey];
+            const restBg = isHot ? HOT_BG : (selected[task.id] ? "#1a2a40" : "#1e2028");
 
             // Sub drag for this task's subitems
             const subReorder = (newSubs) => { setTasks(prev => prev.map(t => t.id === task.id ? { ...t, subitems: newSubs } : t)); if (apiReorderSubitems) apiReorderSubitems(task.id, newSubs.map(s => s.id)); };
@@ -1225,9 +1269,10 @@ function BoardView({ tasks, setTasks, apiUpdateTask, apiUpdateSub, apiAddTask, a
                   onDragEnter={() => taskDrag.onDragEnter(ti)}
                   onDragEnd={taskDrag.onDragEnd}
                   onDragOver={e => e.preventDefault()}
-                  style={{ display: "grid", gridTemplateColumns: gridCols, gap: 0, background: selected[task.id] ? "#1a2a40" : "#1e2028", borderBottom: cellBorder, transition: "all .15s", opacity: isDraggingTask ? 0.4 : 1 }}
-                  onMouseEnter={e => { if (!selected[task.id] && !isDraggingTask) e.currentTarget.style.background = "#232730"; }}
-                  onMouseLeave={e => { if (!selected[task.id]) e.currentTarget.style.background = "#1e2028"; }}>
+                  onClick={() => { if (isHot) onClearHighlight(hlKey); }}
+                  style={{ display: "grid", gridTemplateColumns: gridCols, gap: 0, background: restBg, borderBottom: cellBorder, transition: "all .15s", opacity: isDraggingTask ? 0.4 : 1, ...(isHot ? HOT_ROW : null) }}
+                  onMouseEnter={e => { if (!isHot && !selected[task.id] && !isDraggingTask) e.currentTarget.style.background = "#232730"; }}
+                  onMouseLeave={e => { if (!isHot && !selected[task.id]) e.currentTarget.style.background = "#1e2028"; }}>
                   
                   {/* Drag handle */}
                   <div style={{ ...cellStyle(), cursor: "grab", padding: 0 }}>
@@ -1283,7 +1328,7 @@ function BoardView({ tasks, setTasks, apiUpdateTask, apiUpdateSub, apiAddTask, a
 
                 {/* ── SUBITEMS ── */}
                 {isOpen && (
-                  <SubitemsBlock task={task} allCols={allCols} subColumns={subColumns} setSubColumns={setSubColumns} apiUpdateSubColumn={apiUpdateSubColumn} apiDeleteSubColumn={apiDeleteSubColumn} apiReorderSubColumns={apiReorderSubColumns} setColumns={setColumns} apiUpdateColumn={apiUpdateColumn} apiDeleteColumn={apiDeleteColumn} taskColWidth={taskColWidth} cellBorder={cellBorder} hdrStyle={hdrStyle} cellStyle={cellStyle} upTask={upTask} upSub={upSub} onOpenUpdates={onOpenUpdates} allPeople={allPeople} perms={perms} setShowAddSubCol={setShowAddSubCol} setActiveSubColTaskId={setActiveSubColTaskId} subReorder={subReorder} apiAddSubitem={apiAddSubitem} />
+                  <SubitemsBlock highlights={highlights} onClearHighlight={onClearHighlight} task={task} allCols={allCols} subColumns={subColumns} setSubColumns={setSubColumns} apiUpdateSubColumn={apiUpdateSubColumn} apiDeleteSubColumn={apiDeleteSubColumn} apiReorderSubColumns={apiReorderSubColumns} setColumns={setColumns} apiUpdateColumn={apiUpdateColumn} apiDeleteColumn={apiDeleteColumn} taskColWidth={taskColWidth} cellBorder={cellBorder} hdrStyle={hdrStyle} cellStyle={cellStyle} upTask={upTask} upSub={upSub} onOpenUpdates={onOpenUpdates} allPeople={allPeople} perms={perms} setShowAddSubCol={setShowAddSubCol} setActiveSubColTaskId={setActiveSubColTaskId} subReorder={subReorder} apiAddSubitem={apiAddSubitem} />
                 )}
               </div>
             );
@@ -1302,7 +1347,7 @@ function BoardView({ tasks, setTasks, apiUpdateTask, apiUpdateSub, apiAddTask, a
 }
 
 // Extracted subitems block to use its own drag hook
-function SubitemsBlock({ task, allCols, subColumns, setSubColumns, apiUpdateSubColumn, apiDeleteSubColumn, apiReorderSubColumns, setColumns, apiUpdateColumn, apiDeleteColumn, taskColWidth, cellBorder, hdrStyle, cellStyle, upTask, upSub, onOpenUpdates, allPeople, perms, setShowAddSubCol, setActiveSubColTaskId, subReorder, apiAddSubitem }) {
+function SubitemsBlock({ highlights = {}, onClearHighlight = () => {}, task, allCols, subColumns, setSubColumns, apiUpdateSubColumn, apiDeleteSubColumn, apiReorderSubColumns, setColumns, apiUpdateColumn, apiDeleteColumn, taskColWidth, cellBorder, hdrStyle, cellStyle, upTask, upSub, onOpenUpdates, allPeople, perms, setShowAddSubCol, setActiveSubColTaskId, subReorder, apiAddSubitem }) {
   const subDrag = useDragReorder(task.subitems, subReorder);
   const resizeC = (colId, newW, setter) => setter(prev => prev.map(c => c.id === colId ? { ...c, width: newW + "px" } : c));
   const taskSubColumns = subColumns.filter(sc => sc.taskId === task.id);
@@ -1378,16 +1423,20 @@ function SubitemsBlock({ task, allCols, subColumns, setSubColumns, apiUpdateSubC
         ))}
         <div style={{ height: 34 }} />
       </div>
-      {task.subitems.map((sub, si) => (
+      {task.subitems.map((sub, si) => {
+        const hlKey = `s:${sub.id}`;
+        const isHot = !!highlights[hlKey];
+        return (
         <div key={sub.id}
           draggable
           onDragStart={() => subDrag.onDragStart(si)}
           onDragEnter={() => subDrag.onDragEnter(si)}
           onDragEnd={subDrag.onDragEnd}
           onDragOver={e => e.preventDefault()}
-          style={{ display: "grid", gridTemplateColumns: subGridCols, gap: 0, background: "#191b20", borderBottom: cellBorder, borderLeft: "3px solid #444", marginLeft: 3, transition: "all .15s", opacity: subDrag.dragging === si ? 0.4 : 1 }}
-          onMouseEnter={e => { if (subDrag.dragging !== si) e.currentTarget.style.background = "#1d2028"; }}
-          onMouseLeave={e => e.currentTarget.style.background = "#191b20"}>
+          onClick={() => { if (isHot) onClearHighlight(hlKey); }}
+          style={{ display: "grid", gridTemplateColumns: subGridCols, gap: 0, background: isHot ? HOT_BG : "#191b20", borderBottom: cellBorder, borderLeft: `3px solid ${isHot ? "#fdab3d" : "#444"}`, marginLeft: 3, transition: "all .15s", opacity: subDrag.dragging === si ? 0.4 : 1, ...(isHot ? HOT_ROW : null) }}
+          onMouseEnter={e => { if (!isHot && subDrag.dragging !== si) e.currentTarget.style.background = "#1d2028"; }}
+          onMouseLeave={e => { if (!isHot) e.currentTarget.style.background = "#191b20"; }}>
           
           {/* Drag handle */}
           <div style={{ ...cellStyle({ padding: 0 }), cursor: "grab" }}>
@@ -1398,7 +1447,7 @@ function SubitemsBlock({ task, allCols, subColumns, setSubColumns, apiUpdateSubC
             <ChatBubble count={(sub.updates || []).length} onClick={() => onOpenUpdates(task.id, sub.id)} />
           </div>
           <div style={{ ...cellStyle({ justifyContent: "flex-start", paddingLeft: 16, gap: 5 }) }}>
-            <span style={{ color: "#444", fontSize: 8 }}>●</span>
+            <span title={isHot ? "Alterado agora — clique na linha para dispensar" : undefined} style={{ color: isHot ? "#fdab3d" : "#444", fontSize: isHot ? 10 : 8 }}>●</span>
             <EditText value={sub.name} onChange={v => upSub(task.id, sub.id, { ...sub, name: v })} style={{ color: "#b8bcc4", fontSize: 12.5 }} />
           </div>
           {visibleAllCols.map(col => <div key={col.id} style={cellStyle()}><CellRenderer col={col} item={sub} onChange={ns => upSub(task.id, sub.id, ns)} allPeople={allPeople} small /></div>)}
@@ -1408,12 +1457,13 @@ function SubitemsBlock({ task, allCols, subColumns, setSubColumns, apiUpdateSubC
               onMouseEnter={e => e.currentTarget.style.opacity = 1} onMouseLeave={e => e.currentTarget.style.opacity = 0.4}>+</div>
           ) : <div style={{ ...cellStyle({ borderRight: "none" }) }} />}
         </div>
-      ))}
+        );
+      })}
 
       {/* Inline add subitem row */}
       <InlineAddRow placeholder="Adicionar subitem" gridCols={subGridCols} cellBorder={cellBorder} cellStyle={cellStyle} accentColor="#444" indent
         onAdd={(name) => {
-          const newSub = { id: "s" + Date.now(), name, owner: "", status: "Não iniciado", responsible: [], total: 0, cancellations: 0, deadline: null, custom: {}, updates: [] };
+          const newSub = { id: "s" + Date.now(), name, owner: "", status: "Não iniciado", priority: "Média", responsible: [], total: 0, cancellations: 0, deadline: null, custom: {}, updates: [] };
           if (apiAddSubitem) apiAddSubitem(task.id, newSub);
         }} />
     </div>
@@ -1421,7 +1471,7 @@ function SubitemsBlock({ task, allCols, subColumns, setSubColumns, apiUpdateSubC
 }
 
 // ─── KANBAN VIEW ─────────────────────────────────────────────────────────────
-function KanbanView({ tasks, setTasks, apiUpdateTask, search, allPeople, onOpenUpdates }) {
+function KanbanView({ tasks, setTasks, apiUpdateTask, search, allPeople, onOpenUpdates, highlights = {}, onClearHighlight = () => {} }) {
   const filtered = useMemo(() => { if (!search) return tasks; const q = search.toLowerCase(); return tasks.filter(t => t.name.toLowerCase().includes(q) || (t.responsible||[]).some(r => r.toLowerCase().includes(q))); }, [tasks, search]);
   const cols = useMemo(() => { const c = {}; STATUSES.forEach(s => c[s] = []); filtered.forEach(t => { if (c[t.status]) c[t.status].push(t); }); return c; }, [filtered]);
   const up = (tid, p) => { if (apiUpdateTask) { apiUpdateTask(tid, (prev) => ({ ...prev, ...p })); } else { setTasks(prev => prev.map(t => t.id === tid ? { ...t, ...p } : t)); } };
@@ -1431,12 +1481,18 @@ function KanbanView({ tasks, setTasks, apiUpdateTask, search, allPeople, onOpenU
         <div key={status} style={{ background: "#1a1d23", borderRadius: 10, overflow: "hidden" }}>
           <div style={{ background: sc.bg, padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center" }}><span style={{ color: sc.text, fontWeight: 700, fontSize: 13 }}>{status}</span><span style={{ color: sc.text, opacity: 0.7, fontSize: 11, fontWeight: 600, background: "rgba(0,0,0,.15)", padding: "2px 7px", borderRadius: 10 }}>{cols[status].length}</span></div>
           <div style={{ padding: 8, display: "flex", flexDirection: "column", gap: 6, minHeight: 180 }}>
-            {cols[status].map(task => { const days = daysUntil(task.deadline); const dc = task.subitems.filter(s => s.status === "Feito").length; const pr = task.subitems.length > 0 ? (dc / task.subitems.length) * 100 : 0; return (
-              <div key={task.id} style={{ background: "#23262e", borderRadius: 8, padding: 12, borderLeft: `3px solid ${PRIORITY_COLORS[task.priority]?.bg || "#555"}`, transition: "all .15s" }}
-                onMouseEnter={e => { e.currentTarget.style.transform = "translateY(-2px)"; e.currentTarget.style.boxShadow = "0 4px 12px rgba(0,0,0,.3)"; }}
-                onMouseLeave={e => { e.currentTarget.style.transform = "none"; e.currentTarget.style.boxShadow = "none"; }}>
+            {cols[status].map(task => { const days = daysUntil(task.deadline); const dc = task.subitems.filter(s => s.status === "Feito").length; const pr = task.subitems.length > 0 ? (dc / task.subitems.length) * 100 : 0;
+              // O card representa a tarefa inteira: alteração em qualquer subitem também o destaca.
+              const hotKeys = [`t:${task.id}`, ...task.subitems.map(s => `s:${s.id}`)].filter(k => highlights[k]);
+              const isHot = hotKeys.length > 0;
+              return (
+              <div key={task.id}
+                onClick={() => hotKeys.forEach(onClearHighlight)}
+                style={{ background: isHot ? HOT_BG : "#23262e", borderRadius: 8, padding: 12, borderLeft: `3px solid ${PRIORITY_COLORS[task.priority]?.bg || "#555"}`, transition: "all .15s", ...(isHot ? HOT_ROW : null) }}
+                onMouseEnter={e => { e.currentTarget.style.transform = "translateY(-2px)"; if (!isHot) e.currentTarget.style.boxShadow = "0 4px 12px rgba(0,0,0,.3)"; }}
+                onMouseLeave={e => { e.currentTarget.style.transform = "none"; if (!isHot) e.currentTarget.style.boxShadow = "none"; }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-                  <span style={{ fontWeight: 600, color: "#e8eaed", fontSize: 12 }}>{task.name}</span>
+                  <span style={{ fontWeight: 600, color: "#e8eaed", fontSize: 12 }}>{isHot && <span title="Alterado agora" style={{ color: "#fdab3d", marginRight: 5 }}>●</span>}{task.name}</span>
                   <ChatBubble count={(task.updates || []).length} onClick={() => onOpenUpdates(task.id)} />
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}><PeoplePicker selected={task.responsible || []} onChange={r => up(task.id, { responsible: r })} allPeople={allPeople} /><PriorityBadge priority={task.priority} onClick={() => up(task.id, { priority: cyclePriority(task.priority) })} /></div>
@@ -3605,10 +3661,17 @@ function Dashboard({ currentUser, onLogout }) {
   };
 
   // ─── POLLING: sincronização automática entre clientes ─────────────────────
+  // Marca que o próximo `tasks` veio do servidor: só assim o detector de
+  // alterações alerta (edição local do próprio usuário não deve alarmar).
+  const pollAppliedRef = useRef(false);
   useEffect(() => {
     if (!dataLoaded) return;
     const POLL_MS = 4000;
+    // Com a aba em segundo plano continuamos sincronizando (é o poll que dispara
+    // o som de notificação), só que num intervalo maior para poupar o servidor.
+    const HIDDEN_POLL_MS = 12000;
     let cancelled = false;
+    let lastFetch = 0;
     const isUserEditing = () => {
       const ae = document.activeElement;
       if (!ae) return false;
@@ -3617,17 +3680,23 @@ function Dashboard({ currentUser, onLogout }) {
     };
     const tick = async () => {
       if (cancelled) return;
-      if (document.hidden) return;
       if (!currentBoardId) return;
+      const minGap = document.hidden ? HIDDEN_POLL_MS : POLL_MS;
+      if (Date.now() - lastFetch < minGap - 250) return;
       if (isUserEditing()) return;
       if (hasInFlightMutations()) return;
+      lastFetch = Date.now();
       const data = await apiCall(`/tasks?boardId=${encodeURIComponent(currentBoardId)}`);
       if (cancelled || !data) return;
       if (isUserEditing() || hasInFlightMutations()) return;
+      pollAppliedRef.current = true;
       setTasks(normalizeTasks(data));
     };
     const id = setInterval(tick, POLL_MS);
-    return () => { cancelled = true; clearInterval(id); };
+    // Ao voltar para a aba, sincroniza na hora em vez de esperar o próximo tick.
+    const onVisibility = () => { if (!document.hidden) tick(); };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => { cancelled = true; clearInterval(id); document.removeEventListener("visibilitychange", onVisibility); };
   }, [dataLoaded, currentBoardId]);
 
   // ─── POLLING: lista de quadros/pastas (acesso em tempo real) ──────────────
@@ -3669,79 +3738,210 @@ function Dashboard({ currentUser, onLogout }) {
     // eslint-disable-next-line
   }, [dataLoaded, currentBoardId]);
 
-  // ─── SOM DE NOTIFICAÇÃO PARA NOVAS MENSAGENS ───────────────────────────────
-  // Toca um chime curto quando uma mensagem (update) de outro usuário do quadro
-  // atual aparece. Usa Web Audio API para não depender de arquivos externos.
-  const knownUpdateIdsRef = useRef(null);
+  // ─── ALERTA DE ALTERAÇÕES NO QUADRO ────────────────────────────────────────
+  // Qualquer mudança vinda do servidor (mensagem nova, tarefa/subitem criado ou
+  // campo alterado) dispara: chime, popup do sistema, piscada no título e
+  // destaque na linha afetada — o destaque só sai quando o usuário clica nela.
   const audioCtxRef = useRef(null);
+  const [highlights, setHighlights] = useState({});
+  const clearHighlight = (key) => setHighlights(h => { if (!h[key]) return h; const n = { ...h }; delete n[key]; return n; });
   const [notifSoundEnabled, setNotifSoundEnabled] = useState(() => localStorage.getItem("notifSoundEnabled") !== "0");
   // Ref espelhada para o audio effect ler sem entrar nas deps (toggle não reseta baseline).
   const notifSoundEnabledRef = useRef(notifSoundEnabled);
   useEffect(() => { notifSoundEnabledRef.current = notifSoundEnabled; localStorage.setItem("notifSoundEnabled", notifSoundEnabled ? "1" : "0"); }, [notifSoundEnabled]);
+  // Popup nativo do sistema (Notification API): mesmo padrão do som — pref em
+  // localStorage + ref espelhada. Só existe em contexto seguro (localhost/https).
+  const notifPopupSupported = typeof window !== "undefined" && "Notification" in window;
+  const [notifPopupEnabled, setNotifPopupEnabled] = useState(() => localStorage.getItem("notifPopupEnabled") !== "0");
+  const [notifPermission, setNotifPermission] = useState(() => (typeof window !== "undefined" && "Notification" in window) ? Notification.permission : "unsupported");
+  const notifPopupEnabledRef = useRef(notifPopupEnabled);
+  useEffect(() => { notifPopupEnabledRef.current = notifPopupEnabled; localStorage.setItem("notifPopupEnabled", notifPopupEnabled ? "1" : "0"); }, [notifPopupEnabled]);
+  // Popup só conta como ativo com a permissão concedida; o pedido de permissão
+  // parte do clique do usuário, que é o que o Chrome exige para não bloquear.
+  const notifPopupActive = notifPopupEnabled && notifPopupSupported && notifPermission === "granted";
+  const toggleNotifPopup = async () => {
+    if (!notifPopupSupported) return;
+    if (notifPopupActive) { setNotifPopupEnabled(false); return; }
+    if (Notification.permission === "default") {
+      let perm = "denied";
+      try { perm = await Notification.requestPermission(); } catch {}
+      setNotifPermission(perm);
+      if (perm !== "granted") return;
+    } else if (Notification.permission !== "granted") {
+      setNotifPermission(Notification.permission);
+      alert("As notificações deste site estão bloqueadas no navegador.\n\nLibere em: cadeado/ícone ao lado do endereço → Notificações → Permitir.");
+      return;
+    }
+    setNotifPopupEnabled(true);
+  };
+  // Alerta sonoro contínuo de 3 segundos, sintetizado na hora pela Web Audio
+  // API (sem arquivo externo). Duas senoides em quinta justa dão um tom cheio
+  // que atravessa o ruído do escritório sem virar chiado.
+  const ALARM_SECONDS = 3;
+  const alarmUntilRef = useRef(0);
+  const playChime = () => {
+    try {
+      if (!audioCtxRef.current) {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (Ctx) audioCtxRef.current = new Ctx();
+      }
+      const ctx = audioCtxRef.current;
+      if (!ctx) return;
+      if (ctx.state === "suspended") ctx.resume();
+      const now = ctx.currentTime;
+      // Já tem alarme tocando: não empilha um segundo por cima.
+      if (now < alarmUntilRef.current) return;
+      alarmUntilRef.current = now + ALARM_SECONDS;
+      const tone = (freq, level) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(freq, now);
+        gain.gain.setValueAtTime(0, now);
+        gain.gain.linearRampToValueAtTime(level, now + 0.04);            // ataque suave
+        gain.gain.setValueAtTime(level, now + ALARM_SECONDS - 0.15);     // sustenta o tempo todo
+        gain.gain.linearRampToValueAtTime(0, now + ALARM_SECONDS);       // corte sem estalo
+        osc.connect(gain).connect(ctx.destination);
+        osc.start(now);
+        osc.stop(now + ALARM_SECONDS + 0.05);
+      };
+      tone(880, 0.16);
+      tone(1320, 0.10);
+    } catch {}
+  };
+
   // Snapshot é reiniciado ao trocar de quadro: o primeiro load do quadro novo
-  // apenas registra IDs existentes, sem tocar som.
-  useEffect(() => { knownUpdateIdsRef.current = null; }, [currentBoardId]);
+  // apenas registra o estado atual, sem alertar.
+  const boardSnapshotRef = useRef(null);
+  useEffect(() => { boardSnapshotRef.current = null; setHighlights({}); }, [currentBoardId]);
   useEffect(() => {
     if (!dataLoaded) return;
     const userName = currentUser.name;
-    const currentIds = new Set();
-    let hasNewFromOther = false;
-    const prev = knownUpdateIdsRef.current;
-    const collect = (updates) => {
-      for (const u of updates || []) {
+    const prev = boardSnapshotRef.current;
+    const snap = { tasks: new Map(), subs: new Map(), updates: new Set() };
+    const events = [];
+    // Assinatura do item sem updates/subitens: qualquer campo alterado muda o hash.
+    const sigOf = (obj, omit) => { const c = { ...obj }; omit.forEach(k => delete c[k]); return JSON.stringify(c); };
+    const scanUpdates = (list, targetName, taskId, subId) => {
+      for (const u of list || []) {
         if (!u || !u.id) continue;
-        currentIds.add(u.id);
-        if (prev && !prev.has(u.id) && u.author && u.author !== userName) {
-          hasNewFromOther = true;
-        }
+        snap.updates.add(u.id);
+        if (!prev || prev.updates.has(u.id)) continue;
+        if (!u.author || u.author === userName) continue;
+        events.push({ key: subId ? `s:${subId}` : `t:${taskId}`, taskId, subId, isMessage: true, kind: "message",
+          title: `Nova mensagem de ${u.author}`, body: `${targetName}: ${(u.text || "").slice(0, 80)}` });
       }
     };
-    tasks.forEach(t => {
-      collect(t.updates);
-      (t.subitems || []).forEach(sub => collect(sub.updates));
-    });
-    if (prev !== null && hasNewFromOther && notifSoundEnabledRef.current) {
-      try {
-        if (!audioCtxRef.current) {
-          const Ctx = window.AudioContext || window.webkitAudioContext;
-          if (Ctx) audioCtxRef.current = new Ctx();
-        }
-        const ctx = audioCtxRef.current;
-        if (ctx) {
-          if (ctx.state === "suspended") ctx.resume();
-          const now = ctx.currentTime;
-          const tone = (freq, start, dur) => {
-            const osc = ctx.createOscillator();
-            const gain = ctx.createGain();
-            osc.type = "sine";
-            osc.frequency.setValueAtTime(freq, now + start);
-            gain.gain.setValueAtTime(0, now + start);
-            gain.gain.linearRampToValueAtTime(0.18, now + start + 0.01);
-            gain.gain.exponentialRampToValueAtTime(0.0001, now + start + dur);
-            osc.connect(gain).connect(ctx.destination);
-            osc.start(now + start);
-            osc.stop(now + start + dur + 0.02);
-          };
-          tone(880, 0, 0.18);
-          tone(1175, 0.12, 0.22);
-        }
-      } catch {}
+    for (const t of tasks) {
+      const sig = sigOf(t, ["updates", "subitems"]);
+      snap.tasks.set(t.id, sig);
+      if (prev && !prev.tasks.has(t.id)) events.push({ key: `t:${t.id}`, taskId: t.id, kind: "new", title: "Nova tarefa", body: t.name });
+      else if (prev && prev.tasks.get(t.id) !== sig) events.push({ key: `t:${t.id}`, taskId: t.id, kind: "changed", title: "Tarefa alterada", body: t.name });
+      scanUpdates(t.updates, t.name, t.id, undefined);
+      for (const s of t.subitems || []) {
+        const ssig = sigOf(s, ["updates"]);
+        snap.subs.set(s.id, ssig);
+        if (prev && !prev.subs.has(s.id)) events.push({ key: `s:${s.id}`, taskId: t.id, subId: s.id, kind: "new", title: "Novo subitem", body: `${s.name} — em ${t.name}` });
+        else if (prev && prev.subs.get(s.id) !== ssig) events.push({ key: `s:${s.id}`, taskId: t.id, subId: s.id, kind: "changed", title: "Subitem alterado", body: `${s.name} — em ${t.name}` });
+        scanUpdates(s.updates, s.name, t.id, s.id);
+      }
     }
-    knownUpdateIdsRef.current = currentIds;
-  }, [tasks, dataLoaded, currentUser.name]);
+    boardSnapshotRef.current = snap;
+
+    const fromServer = pollAppliedRef.current;
+    pollAppliedRef.current = false;
+    if (!prev || events.length === 0) return;
+
+    // Mudança feita pelo próprio usuário nesta aba: nada de som/popup, mas a
+    // linha recém-criada acende assim mesmo, como confirmação visual. Edições
+    // de campo do próprio usuário continuam passando em branco.
+    if (!fromServer) {
+      const created = events.filter(e => e.kind === "new");
+      if (created.length) setHighlights(h => { const n = { ...h }; created.forEach(e => { n[e.key] = true; }); return n; });
+      return;
+    }
+
+    setHighlights(h => { const n = { ...h }; events.forEach(e => { n[e.key] = true; }); return n; });
+    if (notifSoundEnabledRef.current) playChime();
+
+    if (document.hidden) {
+      // O navegador ignora window.focus() sem gesto do usuário. Quem restaura
+      // a janela de verdade é o assistente da bandeja (autostart/tray-helper.ps1),
+      // escutando em loopback. Se não estiver instalado, o fetch falha e segue
+      // o baralho — popup e título piscando continuam valendo.
+      try { window.focus(); } catch {}
+      fetch(TRAY_HELPER_URL, { mode: "no-cors", cache: "no-store" }).catch(() => {});
+      if (notifPopupEnabledRef.current && notifPopupSupported && Notification.permission === "granted") {
+        try {
+          const main = events.find(e => e.isMessage) || events[events.length - 1];
+          const many = events.length > 1;
+          const n = new Notification(many ? `${events.length} alterações no quadro` : main.title,
+            { body: many ? `${main.title}: ${main.body}` : main.body, tag: "rotina-board", renotify: true, requireInteraction: true });
+          n.onclick = () => {
+            try { window.focus(); } catch {}
+            if (main.isMessage) setUpdatesTarget({ taskId: main.taskId, subId: main.subId });
+            n.close();
+          };
+        } catch {}
+      }
+    }
+  }, [tasks, dataLoaded, currentUser.name, notifPopupSupported]);
+
+  // Enquanto houver destaque pendente, o título pisca (aparece na barra de
+  // tarefas mesmo com a janela minimizada) e mostra a contagem quando visível.
+  useEffect(() => {
+    const count = Object.keys(highlights).length;
+    const base = "Rotina Escritório";
+    if (count === 0) { document.title = base; return; }
+    let on = false;
+    const tick = () => {
+      if (!document.hidden) { document.title = `(${count}) ${base}`; return; }
+      on = !on;
+      // O nome base fica sempre no título: é por ele que o utilitário da
+      // bandeja encontra a janela para trazer à frente.
+      document.title = on ? `🔔 ${count} alteraç${count > 1 ? "ões" : "ão"} — ${base}` : base;
+    };
+    tick();
+    const id = setInterval(tick, 1200);
+    return () => { clearInterval(id); document.title = base; };
+  }, [highlights]);
 
   // ─── API-BACKED SETTERS ────────────────────────────────────────────────────
   const apiUpdateTask = (tid, newTask) => {
-    setTasks(prev => prev.map(t => t.id === tid ? (typeof newTask === "function" ? newTask(t) : newTask) : t));
-    // Debounced save to API
-    const taskToSave = typeof newTask === "function" ? newTask(tasks.find(t => t.id === tid) || {}) : newTask;
-    apiCall(`/tasks/${tid}`, { method: "PUT", body: JSON.stringify(taskToSave) });
+    const current = tasks.find(t => t.id === tid);
+    const updated = typeof newTask === "function" ? newTask(current || {}) : newTask;
+    // Prioridade alterada → o quadro se reorganiza sozinho: críticas no topo,
+    // depois altas, médias e baixas. A ordem manual dentro de cada faixa é
+    // preservada (sort estável), e a nova ordem é persistida para todo mundo.
+    const priorityChanged = !!current && updated && current.priority !== updated.priority;
+    setTasks(prev => {
+      const next = prev.map(t => t.id === tid ? (typeof newTask === "function" ? newTask(t) : newTask) : t);
+      return priorityChanged ? sortByPriority(next) : next;
+    });
+    apiCall(`/tasks/${tid}`, { method: "PUT", body: JSON.stringify(updated) });
+    if (priorityChanged) {
+      const ordered = sortByPriority(tasks.map(t => t.id === tid ? updated : t));
+      apiReorderTasks(ordered.map(t => t.id));
+    }
   };
 
   const apiUpdateSub = (tid, sid, newSub) => {
-    setTasks(prev => prev.map(t => t.id === tid ? { ...t, subitems: t.subitems.map(s => s.id === sid ? (typeof newSub === "function" ? newSub(s) : newSub) : s) } : t));
-    const subToSave = typeof newSub === "function" ? (() => { const t = tasks.find(x => x.id === tid); const s = t?.subitems?.find(x => x.id === sid); return s ? newSub(s) : {}; })() : newSub;
+    const parent = tasks.find(t => t.id === tid);
+    const current = (parent?.subitems || []).find(s => s.id === sid);
+    const subToSave = typeof newSub === "function" ? (current ? newSub(current) : {}) : newSub;
+    // Mesma regra das tarefas: mudou a prioridade, o bloco de subitens se
+    // reordena (crítica no topo) e a nova ordem vale para todos os usuários.
+    const priorityChanged = !!current && subToSave && current.priority !== subToSave.priority;
+    setTasks(prev => prev.map(t => {
+      if (t.id !== tid) return t;
+      const subs = t.subitems.map(s => s.id === sid ? (typeof newSub === "function" ? newSub(s) : newSub) : s);
+      return { ...t, subitems: priorityChanged ? sortByPriority(subs) : subs };
+    }));
     apiCall(`/subitems/${sid}`, { method: "PUT", body: JSON.stringify(subToSave) });
+    if (priorityChanged) {
+      const ordered = sortByPriority((parent.subitems || []).map(s => s.id === sid ? subToSave : s));
+      apiReorderSubitems(tid, ordered.map(s => s.id));
+    }
   };
 
   const apiAddTask = (task) => {
@@ -4078,7 +4278,7 @@ function Dashboard({ currentUser, onLogout }) {
             </svg>
             {notifCount > 0 && <div style={{ position: "absolute", top: 2, right: 2, minWidth: 16, height: 16, borderRadius: 8, background: "#e2445c", color: "#fff", fontSize: 9, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 3px" }}>{notifCount > 9 ? "9+" : notifCount}</div>}
           </div>
-          {showNotifs && <NotificationPanel tasks={tasks} currentUser={currentUser.name} onClose={() => setShowNotifs(false)} onOpenUpdates={(tid, sid) => openUpdates(tid, sid)} soundEnabled={notifSoundEnabled} onToggleSound={() => setNotifSoundEnabled(v => !v)} />}
+          {showNotifs && <NotificationPanel tasks={tasks} currentUser={currentUser.name} onClose={() => setShowNotifs(false)} onOpenUpdates={(tid, sid) => openUpdates(tid, sid)} soundEnabled={notifSoundEnabled} onToggleSound={() => setNotifSoundEnabled(v => !v)} popupEnabled={notifPopupActive} onTogglePopup={toggleNotifPopup} popupSupported={notifPopupSupported} popupBlocked={notifPermission === "denied"} />}
         </div>
 
         {isAdmin && (
@@ -4207,8 +4407,8 @@ function Dashboard({ currentUser, onLogout }) {
               <div style={{ fontSize: 13, maxWidth: 420, lineHeight: 1.5 }}>Para visualizar um quadro, peça a um administrador para te atribuir como responsável em alguma tarefa. Quando isso acontecer, o quadro aparece automaticamente aqui.</div>
             </div>
           ) : (<>
-            {view === "board" && <BoardView tasks={tasks} setTasks={setTasks} apiUpdateTask={apiUpdateTask} apiUpdateSub={apiUpdateSub} apiAddTask={apiAddTask} apiDeleteTask={apiDeleteTask} apiAddSubitem={apiAddSubitem} search={search} allPeople={allPeople} columns={columns} setColumns={setColumns} apiUpdateColumn={apiUpdateColumn} apiDeleteColumn={apiDeleteColumn} apiReorderColumns={apiReorderColumns} apiReorderTasks={apiReorderTasks} apiReorderSubitems={apiReorderSubitems} setShowAddCol={setShowAddCol} subColumns={subColumns} setSubColumns={setSubColumns} apiUpdateSubColumn={apiUpdateSubColumn} apiDeleteSubColumn={apiDeleteSubColumn} apiReorderSubColumns={apiReorderSubColumns} setShowAddSubCol={setShowAddSubCol} setActiveSubColTaskId={setActiveSubColTaskId} onOpenUpdates={openUpdates} perms={perms} />}
-            {view === "kanban" && <KanbanView tasks={tasks} setTasks={setTasks} apiUpdateTask={apiUpdateTask} search={search} allPeople={allPeople} onOpenUpdates={openUpdates} />}
+            {view === "board" && <BoardView tasks={tasks} setTasks={setTasks} apiUpdateTask={apiUpdateTask} apiUpdateSub={apiUpdateSub} apiAddTask={apiAddTask} apiDeleteTask={apiDeleteTask} apiAddSubitem={apiAddSubitem} search={search} allPeople={allPeople} columns={columns} setColumns={setColumns} apiUpdateColumn={apiUpdateColumn} apiDeleteColumn={apiDeleteColumn} apiReorderColumns={apiReorderColumns} apiReorderTasks={apiReorderTasks} apiReorderSubitems={apiReorderSubitems} setShowAddCol={setShowAddCol} subColumns={subColumns} setSubColumns={setSubColumns} apiUpdateSubColumn={apiUpdateSubColumn} apiDeleteSubColumn={apiDeleteSubColumn} apiReorderSubColumns={apiReorderSubColumns} setShowAddSubCol={setShowAddSubCol} setActiveSubColTaskId={setActiveSubColTaskId} onOpenUpdates={openUpdates} perms={perms} highlights={highlights} onClearHighlight={clearHighlight} />}
+            {view === "kanban" && <KanbanView tasks={tasks} setTasks={setTasks} apiUpdateTask={apiUpdateTask} search={search} allPeople={allPeople} onOpenUpdates={openUpdates} highlights={highlights} onClearHighlight={clearHighlight} />}
             {view === "timeline" && <TimelineView tasks={tasks} search={search} />}
           </>)}
         </div>
@@ -4291,6 +4491,10 @@ function Dashboard({ currentUser, onLogout }) {
       <style>{`
         @keyframes slideIn { from { transform: translateX(20px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
         @keyframes syncSpin { to { transform: rotate(360deg); } }
+        @keyframes hotRow {
+          0%, 100% { box-shadow: inset 0 0 0 2px rgba(253,171,61,.45); }
+          50% { box-shadow: inset 0 0 0 2px rgba(253,171,61,1), inset 0 0 26px rgba(253,171,61,.28); }
+        }
         * { box-sizing: border-box; }
         ::-webkit-scrollbar { width: 5px; height: 5px; }
         ::-webkit-scrollbar-track { background: #13151a; }

@@ -55,7 +55,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS subitems (
     id TEXT PRIMARY KEY, task_id TEXT NOT NULL, name TEXT NOT NULL, owner TEXT DEFAULT '',
     status TEXT DEFAULT 'Não iniciado', responsible TEXT DEFAULT '[]', total INTEGER DEFAULT 0,
-    deadline TEXT, custom TEXT DEFAULT '{}', sort_order INTEGER DEFAULT 0,
+    deadline TEXT, custom TEXT DEFAULT '{}', priority TEXT DEFAULT 'Média', sort_order INTEGER DEFAULT 0,
     FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
   );
   CREATE TABLE IF NOT EXISTS columns_config (
@@ -145,6 +145,13 @@ function slugifyUsername(v) {
     console.log('🔑 Login agora e por nome de usuario. Usuarios migrados:');
     assigned.forEach(a => console.log(`   ${a.name} -> ${a.username}`));
   }
+})();
+
+// Non-destructive migration: subitems ganharam prioridade própria (a coluna
+// "Prioridade" já era exibida na linha do subitem, mas o valor não era salvo).
+(function migrateSubitemPriority() {
+  const cols = db.prepare("PRAGMA table_info(subitems)").all().map(c => c.name);
+  if (!cols.includes('priority')) db.exec("ALTER TABLE subitems ADD COLUMN priority TEXT DEFAULT 'Média'");
 })();
 
 // Non-destructive migration: add scope/parent_column_id to existing databases
@@ -845,7 +852,7 @@ app.get('/api/tasks',auth,(req,res)=>{
     custom: JSON.parse(t.custom), boardId: t.board_id,
     subitems: subs.filter(s => s.task_id === t.id).map(s => ({
       id: s.id, name: s.name, owner: s.owner, status: s.status, responsible: JSON.parse(s.responsible),
-      total: s.total, deadline: s.deadline, custom: JSON.parse(s.custom), cancellations: 0,
+      total: s.total, deadline: s.deadline, custom: JSON.parse(s.custom), priority: s.priority || 'Média', cancellations: 0,
       updates: ups.filter(u => u.target_type === 'subitem' && u.target_id === s.id).map(u => ({ id: u.id, author: u.author, text: u.text, mentions: JSON.parse(u.mentions), files: JSON.parse(u.files), time: u.created_at }))
     })),
     updates: ups.filter(u => u.target_type === 'task' && u.target_id === t.id).map(u => ({ id: u.id, author: u.author, text: u.text, mentions: JSON.parse(u.mentions), files: JSON.parse(u.files), time: u.created_at }))
@@ -881,8 +888,8 @@ app.delete('/api/tasks/:id', auth, canManageTasks, (req, res) => {
   res.json({ success: true });
 });
 
-app.put('/api/subitems/:id',auth,(req,res)=>{const{name,owner,status,responsible,total,deadline,custom}=req.body;const s=db.prepare('SELECT * FROM subitems WHERE id=?').get(req.params.id);if(!s)return res.status(404).json({error:'Não encontrado'});db.prepare('UPDATE subitems SET name=?,owner=?,status=?,responsible=?,total=?,deadline=?,custom=? WHERE id=?').run(name??s.name,owner??s.owner,status??s.status,responsible?JSON.stringify(responsible):s.responsible,total??s.total,deadline!==undefined?deadline:s.deadline,custom?JSON.stringify(custom):s.custom,req.params.id);res.json({success:true});});
-app.post('/api/subitems',auth,(req,res)=>{const{id,task_id,name,owner,status,responsible,total,deadline,custom}=req.body;const m=db.prepare('SELECT MAX(sort_order) as m FROM subitems WHERE task_id=?').get(task_id);db.prepare('INSERT INTO subitems (id,task_id,name,owner,status,responsible,total,deadline,custom,sort_order) VALUES(?,?,?,?,?,?,?,?,?,?)').run(id,task_id,name||'Novo subitem',owner||'',status||'Não iniciado',JSON.stringify(responsible||[]),total||0,deadline||null,JSON.stringify(custom||{}),(m?.m||0)+1);res.json({success:true});});
+app.put('/api/subitems/:id',auth,(req,res)=>{const{name,owner,status,priority,responsible,total,deadline,custom}=req.body;const s=db.prepare('SELECT * FROM subitems WHERE id=?').get(req.params.id);if(!s)return res.status(404).json({error:'Não encontrado'});db.prepare('UPDATE subitems SET name=?,owner=?,status=?,priority=?,responsible=?,total=?,deadline=?,custom=? WHERE id=?').run(name??s.name,owner??s.owner,status??s.status,priority??s.priority,responsible?JSON.stringify(responsible):s.responsible,total??s.total,deadline!==undefined?deadline:s.deadline,custom?JSON.stringify(custom):s.custom,req.params.id);res.json({success:true});});
+app.post('/api/subitems',auth,(req,res)=>{const{id,task_id,name,owner,status,priority,responsible,total,deadline,custom}=req.body;const m=db.prepare('SELECT MAX(sort_order) as m FROM subitems WHERE task_id=?').get(task_id);db.prepare('INSERT INTO subitems (id,task_id,name,owner,status,priority,responsible,total,deadline,custom,sort_order) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(id,task_id,name||'Novo subitem',owner||'',status||'Não iniciado',priority||'Média',JSON.stringify(responsible||[]),total||0,deadline||null,JSON.stringify(custom||{}),(m?.m||0)+1);res.json({success:true});});
 
 app.post('/api/updates',auth,(req,res)=>{const{id,targetType,targetId,text,mentions,files}=req.body;db.prepare('INSERT INTO updates (id,target_type,target_id,author,text,mentions,files) VALUES(?,?,?,?,?,?,?)').run(id,targetType,targetId,req.user.name,text||'',JSON.stringify(mentions||[]),JSON.stringify(files||[]));res.json({success:true});});
 app.delete('/api/updates/:id',auth,(req,res)=>{const u=db.prepare('SELECT author FROM updates WHERE id=?').get(req.params.id);if(!u)return res.status(404).json({error:'Relatório não encontrado'});if(u.author!==req.user.name&&req.user.role!=='admin')return res.status(403).json({error:'Apenas o autor pode excluir'});db.prepare('DELETE FROM updates WHERE id=?').run(req.params.id);res.json({success:true});});

@@ -1,0 +1,281 @@
+================================================================================
+  INSTALAR O AUTO-START DO ROTINAS-ESCRITORIO EM OUTRO COMPUTADOR
+  Guia completo via PowerShell / Prompt de Comando do Windows.
+  Sem precisar de Claude Code. Sem precisar de Administrador.
+================================================================================
+
+
+PRE-REQUISITOS NO NOVO PC
+--------------------------------------------------------------------------------
+
+  - Windows 10 ou 11
+        Conferir: tecla Windows + R, digitar "winver", Enter.
+
+  - Node.js v20.18 ou superior (ideal v22 LTS ou v24)
+        Conferir: abrir PowerShell e digitar "node --version".
+        Baixar:   https://nodejs.org/  (escolher LTS)
+
+  - Google Chrome
+        Necessario somente se quiser que a janela do app abra sozinha.
+        Baixar: https://www.google.com/chrome/
+
+  - Git (opcional, somente se for clonar o repositorio)
+        Conferir: "git --version" no PowerShell.
+        Baixar:   https://git-scm.com/
+
+
+PASSO 1 - TRAZER O PROJETO PARA O NOVO PC
+--------------------------------------------------------------------------------
+
+  Opcao A - Copiar a pasta inteira (mais simples)
+
+      Copie a pasta "Rotinas-Escritorio" do PC original para
+      C:\Users\<seu-usuario>\Desktop\ no novo PC.
+
+      Pode excluir das copias (sao pesados e serao regenerados):
+          node_modules/
+          client/build/
+          server/database.sqlite*
+          server/backups/
+
+  Opcao B - Clonar do Git (se o repo estiver hospedado)
+
+      cd $env:USERPROFILE\Desktop
+      git clone <url-do-repositorio> Rotinas-Escritorio
+
+  Ao final, o caminho deve ser:
+      C:\Users\<usuario>\Desktop\Rotinas-Escritorio\
+
+
+PASSO 2 - INSTALAR AS DEPENDENCIAS
+--------------------------------------------------------------------------------
+
+  Abrir o PowerShell (tecla Windows -> digitar "powershell" -> Enter) e rodar:
+
+      cd $env:USERPROFILE\Desktop\Rotinas-Escritorio\server
+      npm install
+
+      cd $env:USERPROFILE\Desktop\Rotinas-Escritorio\client
+      npm install
+
+  Cada "npm install" demora de 1 a 5 minutos. Ignorar avisos amarelos
+  (warnings). Erros vermelhos ("npm error") precisam ser resolvidos antes
+  de continuar.
+
+
+PASSO 3 - GERAR O BUILD DE PRODUCAO DO CLIENT
+--------------------------------------------------------------------------------
+
+      cd $env:USERPROFILE\Desktop\Rotinas-Escritorio\client
+      npm run build
+
+  Cria a pasta "client/build/". Sem esse passo o servidor sobe mas a
+  interface nao aparece.
+
+
+PASSO 4 - TESTAR MANUALMENTE (opcional, mas recomendado)
+--------------------------------------------------------------------------------
+
+      cd $env:USERPROFILE\Desktop\Rotinas-Escritorio\server
+      $env:NODE_ENV = 'production'
+      node index.js
+
+  Deve aparecer "Server running on port 3001". Em outra janela do PowerShell:
+
+      Invoke-WebRequest http://localhost:3001 -UseBasicParsing | Select-Object StatusCode
+
+  Tem que retornar 200. Voltar na primeira janela e pressionar Ctrl+C
+  para encerrar o servidor.
+
+
+PASSO 5 - REGISTRAR O AUTO-START
+--------------------------------------------------------------------------------
+
+  Tres formas - escolha uma:
+
+  5a) Duplo-clique (mais facil)
+      Abrir o Explorer em "Desktop\Rotinas-Escritorio\autostart\"
+      e dar duplo-clique em INSTALAR.bat
+
+  5b) Pelo PowerShell
+      powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\Desktop\Rotinas-Escritorio\autostart\instalar-autostart.ps1"
+
+  5c) Pelo Prompt de Comando (cmd)
+      "%USERPROFILE%\Desktop\Rotinas-Escritorio\autostart\INSTALAR.bat"
+
+  Saida esperada:
+      "OK! Tarefa criada. Sera executada automaticamente no proximo
+       logon do Windows."
+
+
+PASSO 6 - INSTALAR O APP PWA NO CHROME
+--------------------------------------------------------------------------------
+
+  Esta etapa e o que faz a janela do app abrir sozinha. Sem ela, o
+  servidor sobe normal mas a janela tem que ser aberta manualmente
+  pelo navegador.
+
+  1) Iniciar o servidor agora (uma vez, para o Chrome conseguir abrir o site):
+
+         Start-ScheduledTask -TaskName 'RotinasEscritorio-AutoStart'
+
+  2) Abrir o Chrome e ir em:  http://localhost:3001
+
+  3) No canto direito da barra de endereco, clicar no icone de
+     "Instalar" (parecido com um monitor com seta para baixo),
+     OU menu de 3 pontos -> "Transmitir, salvar e compartilhar"
+     -> "Instalar como aplicativo".
+
+  4) Confirmar o nome "Rotina Escritorio" (e importante manter as
+     palavras "Rotina" e "Escrit" no nome - o script busca por elas).
+
+  5) O atalho sera criado em:
+         %APPDATA%\Microsoft\Windows\Start Menu\Programs\Apps do Chrome\
+
+
+PASSO 7 - VALIDAR TUDO
+--------------------------------------------------------------------------------
+
+  Tarefa registrada?
+      Get-ScheduledTask -TaskName 'RotinasEscritorio-AutoStart' | Format-List TaskName, State
+
+  Servidor respondendo?
+      Invoke-WebRequest http://localhost:3001 -UseBasicParsing | Select-Object StatusCode
+
+  Log da ultima execucao:
+      Get-Content "$env:USERPROFILE\Desktop\Rotinas-Escritorio\autostart\server.log" -Tail 10
+
+  Resultado esperado:
+      State: Ready
+      StatusCode: 200
+      Log mostrando "Server running on port 3001"
+
+  Teste final: fazer logoff/logon do Windows. O servidor sobe escondido
+  e, segundos depois, a janela do app abre sozinha.
+
+
+PASSO 8 - ASSISTENTE DE BANDEJA (traz a janela para a frente)
+--------------------------------------------------------------------------------
+
+  O QUE E
+      Um icone roxo "R" ao lado do relogio. Quando alguem altera algo no
+      quadro e a sua janela esta minimizada ou atras de outra, a pagina
+      avisa o assistente e ele RESTAURA e traz a janela para a frente.
+      Sem ele, o navegador nao tem permissao para fazer isso sozinho -
+      o maximo que acontece e o som, o popup do Windows e o titulo
+      piscando na barra de tarefas.
+
+  ONDE INSTALAR
+      Em CADA computador que abre o quadro, inclusive os que so acessam
+      o servidor pela rede. E por usuario do Windows, como o auto-start.
+
+  COMO INSTALAR
+      Duplo-clique em autostart\INSTALAR-BANDEJA.bat
+      (registra no logon e ja liga na hora - nao precisa de Administrador)
+
+  COMO TESTAR
+      Botao direito no icone roxo -> "Testar agora".
+      A janela do quadro deve pular para a frente.
+      Se disser que nao achou a janela, abra o quadro no navegador antes.
+
+  MENU DO ICONE (botao direito)
+      Pausar / Retomar   - suspende sem fechar
+      Testar agora       - forca um salto de janela
+      Sair               - encerra ate o proximo logon
+      Duplo-clique no icone tambem traz a janela para a frente.
+
+  COMO FUNCIONA POR DENTRO
+      O assistente escuta em 127.0.0.1:35010 (SO loopback - nada exposto
+      na rede). A pagina chama http://127.0.0.1:35010/attention quando
+      detecta alteracao com a aba oculta. A janela e encontrada pelo
+      titulo, que sempre contem "Rotina Escrit".
+
+  LIGAR AGORA SEM INSTALAR
+      Duplo-clique em autostart\INICIAR-BANDEJA.bat
+
+  DESATIVAR
+      Duplo-clique em autostart\DESINSTALAR-BANDEJA.bat
+
+  PROBLEMAS
+      Icone nao aparece
+          Rodar INICIAR-BANDEJA.bat e observar se surge alguma janela de
+          erro. Conferir se a porta esta ocupada:
+              Test-NetConnection 127.0.0.1 -Port 35010
+
+      Icone aparece mas a janela nao pula
+          O nome do app PWA precisa conter "Rotina" e "Escrit" no titulo
+          (Passo 6). Confira com o "Testar agora".
+
+      Funciona no PC do servidor mas nao no PC da rede
+          O assistente tem que estar instalado NAQUELE PC tambem. Ele
+          roda na maquina de quem esta olhando o quadro, nao no servidor.
+
+      Acesso por HTTPS (Render) nao aciona o assistente
+          Pagina https nao pode chamar http://127.0.0.1 (bloqueio de
+          conteudo misto do navegador). Vale para acesso local/rede.
+
+
+COMANDOS DO DIA-A-DIA
+--------------------------------------------------------------------------------
+
+  Iniciar o servidor agora (sem reiniciar Windows)
+      Start-ScheduledTask -TaskName 'RotinasEscritorio-AutoStart'
+
+  Encerrar o servidor agora
+      Duplo-clique em autostart\PARAR-SERVIDOR.bat
+
+  Desativar o auto-start
+      Duplo-clique em autostart\DESINSTALAR.bat
+
+  Ligar o assistente de bandeja agora
+      Duplo-clique em autostart\INICIAR-BANDEJA.bat
+
+  Conferir se o assistente esta no ar
+      Invoke-WebRequest http://127.0.0.1:35010/ping -UseBasicParsing | Select-Object -ExpandProperty Content
+
+  Ver o log
+      Get-Content "$env:USERPROFILE\Desktop\Rotinas-Escritorio\autostart\server.log" -Tail 30
+
+  Ver/editar a tarefa pelo Windows
+      Tecla Windows -> "Agendador de Tarefas" -> procurar
+      "RotinasEscritorio-AutoStart"
+
+
+PROBLEMAS COMUNS
+--------------------------------------------------------------------------------
+
+  "node nao e reconhecido como comando"
+      Node.js nao esta instalado ou nao esta no PATH. Instalar de
+      https://nodejs.org/ (versao LTS) e reabrir o PowerShell.
+
+  "npm install" falha com erro do better-sqlite3 / "Could not locate
+  the bindings file"
+      Versao do Node muito antiga ou muito nova sem prebuild publicado.
+      Use Node 20.18+, 22.x ou 24.x. Em ultimo caso, rode
+      "npm install better-sqlite3@latest" dentro de "server/".
+
+  Tarefa rodou (LastTaskResult: 0) mas o site nao abre em http://localhost:3001
+      Olhar "autostart\server.log" - costuma mostrar erro de porta em
+      uso, dependencia faltando ou "client/build/" ausente.
+
+  Servidor sobe mas a janela do PWA nao abre
+      O atalho nao esta no lugar esperado. Verifique:
+
+          Get-ChildItem "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Apps do Chrome" | Where-Object Name -like "*Rotina*Escrit*"
+
+      Se nao retornar nada, refazer o Passo 6 (instalar o app pelo Chrome).
+
+  Quero rodar de uma pasta diferente (nao a Desktop)
+      Nao precisa editar nada - o INSTALAR.bat detecta o proprio caminho.
+      Basta executar o INSTALAR.bat de onde a pasta "autostart/" estiver.
+
+  O outro usuario do PC vai usar tambem
+      A tarefa e registrada POR USUARIO. Cada usuario do Windows que
+      precisar do auto-start tem que fazer login com sua conta e rodar
+      o INSTALAR.bat uma vez.
+
+
+================================================================================
+  Fim do guia. Em caso de duvidas, consultar o arquivo server.log dentro
+  da pasta "autostart/" - ele registra cada inicializacao do servidor.
+================================================================================
