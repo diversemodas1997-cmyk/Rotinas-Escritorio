@@ -147,6 +147,16 @@ function slugifyUsername(v) {
   }
 })();
 
+// Acesso explícito a quadro, independente de estar como responsável em tarefa.
+// É o que permite adicionar/remover alguém de um quadro sem inventar tarefa.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS board_members (
+    board_id TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    PRIMARY KEY (board_id, user_id)
+  );
+`);
+
 // Non-destructive migration: subitems ganharam prioridade própria (a coluna
 // "Prioridade" já era exibida na linha do subitem, mas o valor não era salvo).
 (function migrateSubitemPriority() {
@@ -575,6 +585,7 @@ app.delete('/api/users/:id',auth,adminOnly,(req,res)=>{
   // Names are stored as strings (not IDs) in tasks.responsible / subitems.responsible.
   const tx = db.transaction(() => {
     db.prepare('DELETE FROM users WHERE id=?').run(id);
+    db.prepare('DELETE FROM board_members WHERE user_id=?').run(id);
     let cleaned = 0;
     const updTask = db.prepare('UPDATE tasks SET responsible=? WHERE id=?');
     for (const t of db.prepare('SELECT id, responsible FROM tasks').all()) {
@@ -679,10 +690,14 @@ app.delete('/api/folders/:id', auth, adminOnly, (req, res) => {
 });
 
 // ===== Boards =====
-// Returns the set of board IDs the given user is responsible for somewhere
-// (in any task.responsible or subitem.responsible). Admins always see all boards.
-function getAccessibleBoardIds(userName) {
+// Quadros visíveis para o usuário: os que o admin liberou explicitamente
+// (board_members) MAIS aqueles onde ele é responsável por alguma tarefa ou
+// subitem. Admin enxerga todos.
+function getAccessibleBoardIds(userName, userId) {
   const ids = new Set();
+  if (userId != null) {
+    for (const m of db.prepare('SELECT board_id FROM board_members WHERE user_id=?').all(userId)) ids.add(m.board_id);
+  }
   for (const t of db.prepare('SELECT board_id, responsible FROM tasks').all()) {
     try {
       const arr = JSON.parse(t.responsible || '[]');
@@ -703,13 +718,13 @@ function getAccessibleBoardIds(userName) {
 function userCanAccessBoard(user, boardId) {
   if (!boardId) return false;
   if (user.role === 'admin') return true;
-  return getAccessibleBoardIds(user.name).has(boardId);
+  return getAccessibleBoardIds(user.name, user.id).has(boardId);
 }
 
 app.get('/api/boards', auth, (req, res) => {
   let rows = db.prepare('SELECT * FROM boards ORDER BY sort_order, created_at').all();
   if (req.user.role !== 'admin') {
-    const accessible = getAccessibleBoardIds(req.user.name);
+    const accessible = getAccessibleBoardIds(req.user.name, req.user.id);
     rows = rows.filter(b => accessible.has(b.id));
   }
   res.json(rows.map(b => ({ id: b.id, name: b.name, icon: b.icon, color: b.color, sortOrder: b.sort_order, folderId: b.folder_id, createdAt: b.created_at })));
@@ -819,6 +834,50 @@ app.put('/api/boards/reorder', auth, adminOnly, (req, res) => {
   res.json({ success: true });
 });
 
+// ===== Acesso ao quadro =====
+// Lista quem tem acesso: liberado explicitamente pelo admin (member) e/ou por
+// ser responsável em alguma tarefa/subitem do quadro (responsible). Admin vê
+// tudo por definição do papel, então aparece marcado como 'admin'.
+app.get('/api/boards/:id/members', auth, adminOnly, (req, res) => {
+  const boardId = req.params.id;
+  if (!db.prepare('SELECT id FROM boards WHERE id=?').get(boardId)) return res.status(404).json({ error: 'Quadro não encontrado' });
+
+  const explicit = new Set(db.prepare('SELECT user_id FROM board_members WHERE board_id=?').all(boardId).map(r => r.user_id));
+  const byTask = new Set();
+  for (const t of db.prepare('SELECT responsible FROM tasks WHERE board_id=?').all(boardId)) {
+    try { (JSON.parse(t.responsible || '[]') || []).forEach(n => byTask.add(n)); } catch {}
+  }
+  for (const s of db.prepare('SELECT s.responsible AS r FROM subitems s JOIN tasks t ON s.task_id=t.id WHERE t.board_id=?').all(boardId)) {
+    try { (JSON.parse(s.r || '[]') || []).forEach(n => byTask.add(n)); } catch {}
+  }
+
+  const users = db.prepare('SELECT id, name, username, role FROM users ORDER BY name').all();
+  res.json(users.map(u => ({
+    id: u.id, name: u.name, username: u.username, role: u.role,
+    member: explicit.has(u.id),
+    viaTask: byTask.has(u.name),
+    // Por que este usuário enxerga o quadro hoje.
+    reason: u.role === 'admin' ? 'admin' : (explicit.has(u.id) ? 'member' : (byTask.has(u.name) ? 'task' : null)),
+  })));
+});
+
+// Substitui a lista de acesso explícito do quadro.
+app.put('/api/boards/:id/members', auth, adminOnly, (req, res) => {
+  const boardId = req.params.id;
+  const { userIds } = req.body || {};
+  if (!Array.isArray(userIds)) return res.status(400).json({ error: 'userIds deve ser array' });
+  if (!db.prepare('SELECT id FROM boards WHERE id=?').get(boardId)) return res.status(404).json({ error: 'Quadro não encontrado' });
+
+  const valid = new Set(db.prepare('SELECT id FROM users').all().map(u => u.id));
+  const ins = db.prepare('INSERT OR IGNORE INTO board_members (board_id, user_id) VALUES (?,?)');
+  const tx = db.transaction((ids) => {
+    db.prepare('DELETE FROM board_members WHERE board_id=?').run(boardId);
+    ids.filter(id => valid.has(id)).forEach(id => ins.run(boardId, id));
+  });
+  tx(userIds.map(Number));
+  res.json({ success: true, count: db.prepare('SELECT COUNT(*) as c FROM board_members WHERE board_id=?').get(boardId).c });
+});
+
 app.delete('/api/boards/:id', auth, adminOnly, (req, res) => {
   const id = req.params.id;
   const total = db.prepare('SELECT COUNT(*) as c FROM boards').get().c;
@@ -826,6 +885,7 @@ app.delete('/api/boards/:id', auth, adminOnly, (req, res) => {
   if (!db.prepare('SELECT id FROM boards WHERE id=?').get(id)) return res.status(404).json({ error: 'Quadro não encontrado' });
   const tx = db.transaction(() => {
     // Cascade: subitems via FK ON DELETE CASCADE on tasks. Delete columns + tasks explicitly.
+    db.prepare('DELETE FROM board_members WHERE board_id=?').run(id);
     db.prepare('DELETE FROM columns_config WHERE board_id=?').run(id);
     db.prepare('DELETE FROM tasks WHERE board_id=?').run(id);
     db.prepare('DELETE FROM boards WHERE id=?').run(id);

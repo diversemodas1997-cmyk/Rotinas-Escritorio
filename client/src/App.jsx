@@ -3263,7 +3263,7 @@ function SyncIndicator() {
 }
 
 // ─── BOARDS SIDEBAR ──────────────────────────────────────────────────────────
-function BoardsSidebar({ folders, boards, currentBoardId, onSelectBoard, onNewBoard, onNewFolder, onRenameBoard, onRenameFolder, onDeleteBoard, onDeleteFolder, isAdmin, collapsed, onToggleCollapsed, collapsedFolders, onToggleFolder }) {
+function BoardsSidebar({ folders, boards, currentBoardId, onSelectBoard, onNewBoard, onNewFolder, onRenameBoard, onRenameFolder, onDeleteBoard, onDeleteFolder, onManageAccess, isAdmin, collapsed, onToggleCollapsed, collapsedFolders, onToggleFolder }) {
   if (collapsed) {
     return (
       <div style={{ width: 38, background: "#1a1d23", borderRight: "1px solid #2a2d35", display: "flex", flexDirection: "column", alignItems: "center", padding: "10px 0", flexShrink: 0 }}>
@@ -3311,6 +3311,7 @@ function BoardsSidebar({ folders, boards, currentBoardId, onSelectBoard, onNewBo
                         <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{b.name}</span>
                         {isAdmin && (
                           <span style={{ display: "flex", gap: 2, opacity: 0.5 }} onClick={e => e.stopPropagation()}>
+                            <button title="Gerenciar acesso ao quadro" onClick={() => onManageAccess(b)} style={{ background: "transparent", border: "none", color: "#778ca3", cursor: "pointer", fontSize: 11, padding: 0, lineHeight: 1 }}>👥</button>
                             <button title="Renomear" onClick={() => onRenameBoard(b)} style={{ background: "transparent", border: "none", color: "#778ca3", cursor: "pointer", fontSize: 10, padding: 0, lineHeight: 1 }}>✎</button>
                             <button title="Excluir" onClick={() => onDeleteBoard(b)} style={{ background: "transparent", border: "none", color: "#e2445c", cursor: "pointer", fontSize: 10, padding: 0, lineHeight: 1 }}>🗑</button>
                           </span>
@@ -3330,6 +3331,84 @@ function BoardsSidebar({ folders, boards, currentBoardId, onSelectBoard, onNewBo
           <button onClick={onNewFolder} title="Nova pasta" style={{ background: "transparent", color: "#c8cdd4", border: "1px solid #2a2d35", borderRadius: 6, padding: "6px 8px", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>📁+</button>
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── BOARD ACCESS MODAL ──────────────────────────────────────────────────────
+// Acesso explícito ao quadro, sem depender de eleger a pessoa em alguma tarefa.
+function BoardAccessModal({ board, onClose }) {
+  const [rows, setRows] = useState(null);
+  const [checked, setChecked] = useState({});
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const data = await apiCall(`/boards/${board.id}/members`);
+      if (!alive) return;
+      if (!data) { setErr("Não foi possível carregar a lista de usuários."); setRows([]); return; }
+      setRows(data);
+      setChecked(Object.fromEntries(data.map(u => [u.id, !!u.member])));
+    })();
+    return () => { alive = false; };
+  }, [board.id]);
+
+  const save = async () => {
+    setSaving(true); setErr("");
+    const userIds = Object.entries(checked).filter(([, v]) => v).map(([k]) => Number(k));
+    const r = await apiCall(`/boards/${board.id}/members`, { method: "PUT", body: JSON.stringify({ userIds }), returnError: true });
+    setSaving(false);
+    if (r?.error) { setErr(r.error); return; }
+    onClose(true);
+  };
+
+  const linha = (u) => {
+    const on = !!checked[u.id];
+    const isAdmin = u.role === "admin";
+    return (
+      <div key={u.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: 8, background: on ? "rgba(108,92,231,.10)" : "transparent", marginBottom: 3 }}>
+        <input type="checkbox" checked={isAdmin ? true : on} disabled={isAdmin}
+          onChange={() => setChecked(p => ({ ...p, [u.id]: !p[u.id] }))}
+          style={{ accentColor: "#6c5ce7", width: 15, height: 15, cursor: isAdmin ? "not-allowed" : "pointer" }} />
+        <Avatar name={u.name} size={26} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 13, color: "#e8eaed", fontWeight: 600 }}>{u.name}</div>
+          <div style={{ fontSize: 11, color: "#778ca3" }}>@{u.username}</div>
+        </div>
+        {isAdmin && <span title="Administradores enxergam todos os quadros" style={{ fontSize: 10, color: "#e2445c", border: "1px solid rgba(226,68,92,.4)", borderRadius: 10, padding: "2px 7px" }}>admin — vê tudo</span>}
+        {!isAdmin && u.viaTask && <span title="Já enxerga o quadro por ser responsável em alguma tarefa ou subitem daqui" style={{ fontSize: 10, color: "#fdab3d", border: "1px solid rgba(253,171,61,.4)", borderRadius: 10, padding: "2px 7px" }}>responsável em tarefa</span>}
+      </div>
+    );
+  };
+
+  return (
+    <div onClick={() => onClose(false)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200 }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#23262e", borderRadius: 14, width: 480, maxWidth: "92vw", maxHeight: "86vh", display: "flex", flexDirection: "column", border: "1px solid #3a3d45", boxShadow: "0 18px 50px rgba(0,0,0,.6)" }}>
+        <div style={{ padding: "16px 20px", borderBottom: "1px solid #3a3d45" }}>
+          <div style={{ fontWeight: 700, fontSize: 16, color: "#e8eaed" }}>Acesso ao quadro</div>
+          <div style={{ fontSize: 12, color: "#778ca3", marginTop: 3 }}>{board.icon} {board.name}</div>
+        </div>
+
+        <div style={{ padding: "10px 14px", flex: 1, overflow: "auto" }}>
+          <div style={{ fontSize: 11.5, color: "#a5b1c2", lineHeight: 1.5, marginBottom: 10 }}>
+            Marque quem pode ver este quadro. O acesso vale por si só — não é preciso colocar a pessoa como responsável em nenhuma tarefa.
+          </div>
+          {rows === null && <div style={{ padding: 20, textAlign: "center", color: "#778ca3", fontSize: 13 }}>Carregando...</div>}
+          {rows && rows.length === 0 && !err && <div style={{ padding: 20, textAlign: "center", color: "#778ca3", fontSize: 13 }}>Nenhum usuário cadastrado.</div>}
+          {rows && rows.map(linha)}
+        </div>
+
+        {err && <div style={{ padding: "8px 20px", color: "#e2445c", fontSize: 12 }}>{err}</div>}
+
+        <div style={{ padding: "12px 16px", borderTop: "1px solid #3a3d45", display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <button onClick={() => onClose(false)} style={{ background: "transparent", border: "1px solid #444", color: "#c8cdd4", borderRadius: 8, padding: "8px 16px", fontSize: 12.5, cursor: "pointer" }}>Cancelar</button>
+          <button onClick={save} disabled={saving || rows === null} style={{ background: "#6c5ce7", border: "none", color: "#fff", borderRadius: 8, padding: "8px 18px", fontSize: 12.5, fontWeight: 600, cursor: saving ? "default" : "pointer", opacity: saving || rows === null ? 0.6 : 1 }}>
+            {saving ? "Salvando..." : "Salvar acesso"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -3592,6 +3671,7 @@ function Dashboard({ currentUser, onLogout }) {
   const boardPickerRef = useRef(null);
   const [showNewFolder, setShowNewFolder] = useState(false);
   const [renameBoardTarget, setRenameBoardTarget] = useState(null);
+  const [accessBoardTarget, setAccessBoardTarget] = useState(null);
   const [renameFolderTarget, setRenameFolderTarget] = useState(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("rotina_sidebar_collapsed") === "1");
   const notifRef = useRef(null);
@@ -4404,6 +4484,7 @@ function Dashboard({ currentUser, onLogout }) {
           onRenameFolder={(f) => setRenameFolderTarget(f)}
           onDeleteBoard={handleDeleteBoard}
           onDeleteFolder={handleDeleteFolder}
+          onManageAccess={(b) => setAccessBoardTarget(b)}
           isAdmin={isAdmin}
           collapsed={sidebarCollapsed}
           onToggleCollapsed={() => { const next = !sidebarCollapsed; setSidebarCollapsed(next); localStorage.setItem("rotina_sidebar_collapsed", next ? "1" : "0"); }}
@@ -4461,6 +4542,16 @@ function Dashboard({ currentUser, onLogout }) {
           target={renameFolderTarget}
           onClose={() => setRenameFolderTarget(null)}
           onCreate={(payload) => apiUpdateFolder(renameFolderTarget.id, payload)}
+        />
+      )}
+      {accessBoardTarget && (
+        <BoardAccessModal
+          board={accessBoardTarget}
+          onClose={(changed) => {
+            setAccessBoardTarget(null);
+            // Recarrega a lista de quadros: quem perdeu/ganhou acesso vê na hora.
+            if (changed) apiCall("/boards").then(bs => { if (Array.isArray(bs)) setBoards(bs); });
+          }}
         />
       )}
       {renameBoardTarget && (
