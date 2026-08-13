@@ -3902,10 +3902,10 @@ function Dashboard({ currentUser, onLogout }) {
     }
     setNotifPopupEnabled(true);
   };
-  // Alerta sonoro curto: três toques de sino iguais, em sequência rápida —
-  // o padrão de notificação que se reconhece de imediato. Sintetizado na hora
-  // pela Web Audio API, sem arquivo externo.
-  const ALARM_SECONDS = 1.5;
+  // Ringtone polifônico curto: três vozes tocando ao mesmo tempo — melodia,
+  // harmonia em terças e baixo — sobre uma tríade de Dó maior. Sintetizado na
+  // hora pela Web Audio API, sem arquivo externo.
+  const ALARM_SECONDS = 2.2;
   const alarmUntilRef = useRef(0);
   const playChime = () => {
     try {
@@ -3939,7 +3939,7 @@ function Dashboard({ currentUser, onLogout }) {
       // Uma nota de sino: fundamental + oitava discreta, ataque rápido e
       // decaimento exponencial (é o decaimento que faz soar percussivo/doce
       // em vez de um bipe eletrônico).
-      const nota = (freq, atraso, nivel, duracao = 1.6) => {
+      const nota = (freq, atraso, nivel, duracao = 1.6, brilho = 0.22) => {
         const t0 = now + atraso;
         const gain = ctx.createGain();
         gain.gain.setValueAtTime(0.0001, t0);
@@ -3954,22 +3954,49 @@ function Dashboard({ currentUser, onLogout }) {
         osc.connect(gain);
         osc.start(t0); osc.stop(fim);
 
-        const harm = ctx.createOscillator();
-        const harmGain = ctx.createGain();
-        harm.type = "sine";
-        harm.frequency.setValueAtTime(freq * 2, t0);
-        harmGain.gain.setValueAtTime(0.22, t0);   // oitava só como brilho
-        harm.connect(harmGain).connect(gain);
-        harm.start(t0); harm.stop(fim);
+        if (brilho > 0) {
+          const harm = ctx.createOscillator();
+          const harmGain = ctx.createGain();
+          harm.type = "sine";
+          harm.frequency.setValueAtTime(freq * 2, t0);
+          harmGain.gain.setValueAtTime(brilho, t0);   // oitava só como brilho
+          harm.connect(harmGain).connect(gain);
+          harm.start(t0); harm.stop(fim);
+        }
       };
 
-      // Três toques iguais em sequência, espaçados o bastante para se ouvir um
-      // a um. O último decai por mais tempo, para o alerta terminar apagando
-      // em vez de ser cortado no meio.
-      const SOL5 = 783.99;
-      nota(SOL5, 0.00, 0.16, 0.45);
-      nota(SOL5, 0.30, 0.155, 0.45);
-      nota(SOL5, 0.60, 0.15, 0.85);
+      const SOL3 = 196.00, DO4 = 261.63, MI4 = 329.63, SOL4 = 392.00, SI4 = 493.88,
+            DO5 = 523.25, MI5 = 659.25, SOL5 = 783.99, DO6 = 1046.50, MI6 = 1318.51;
+
+      // 1) Baixo: sustenta a harmonia por baixo (I - V - I). Sem brilho, para
+      //    ficar quente e não competir com a melodia.
+      nota(DO4, 0.00, 0.085, 1.3, 0);
+      nota(SOL3, 0.45, 0.085, 1.3, 0);
+      nota(DO4, 0.90, 0.09, 1.6, 0);
+
+      // 2) Acompanhamento: tríade inteira soando junto — é o que dá o corpo
+      //    polifônico, com nível baixo para ficar atrás da melodia.
+      nota(DO5, 0.00, 0.045, 1.4, 0.12);
+      nota(MI5, 0.00, 0.042, 1.4, 0.12);
+      nota(SOL5, 0.00, 0.040, 1.4, 0.12);
+      nota(SI4, 0.45, 0.042, 1.2, 0.12);
+      nota(SOL4, 0.45, 0.042, 1.2, 0.12);
+      nota(MI4, 0.90, 0.042, 1.5, 0.12);
+      nota(DO5, 0.90, 0.045, 1.5, 0.12);
+
+      // 3) Melodia em cima, com a terça/sexta logo abaixo acompanhando —
+      //    duas vozes andando juntas, marca do ringtone polifônico.
+      const frase = [
+        [SOL5, MI5, 0.00, 0.55],
+        [DO6, SOL5, 0.22, 0.55],
+        [MI6, DO6, 0.45, 0.55],
+        [DO6, SOL5, 0.68, 0.75],
+        [SOL5, MI5, 0.90, 1.15],
+      ];
+      frase.forEach(([alta, baixa, quando, cauda]) => {
+        nota(alta, quando, 0.105, cauda);
+        nota(baixa, quando, 0.062, cauda);
+      });
     } catch {}
   };
 
