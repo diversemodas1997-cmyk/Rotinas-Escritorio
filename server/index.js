@@ -1273,10 +1273,49 @@ function backupAuth(req, res, next) {
   if (BACKUP_TOKEN && headerToken && headerToken === BACKUP_TOKEN) return next();
   return auth(req, res, () => adminOnly(req, res, next));
 }
+// O banco roda em modo WAL: as gravações recentes vivem no arquivo -wal, não
+// dentro do .sqlite. Enviar DB_PATH direto entrega um banco praticamente vazio
+// (4 KB, sem tabelas) — foi o que este endpoint fez até aqui. A API .backup()
+// do SQLite gera uma cópia consistente, já com o WAL aplicado.
 app.get('/api/admin/backup', backupAuth, (req, res) => {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  res.download(DB_PATH, `database.backup-${stamp}.sqlite`);
+  const tmp = path.join(path.dirname(DB_PATH), `backup-tmp-${Date.now()}-${process.pid}.sqlite`);
+  try {
+    // Descarrega o WAL dentro do .sqlite e só então copia: o arquivo passa a
+    // conter tudo. (Sem isto o download saía com 4 KB e nenhuma tabela.)
+    db.pragma('wal_checkpoint(TRUNCATE)');
+    fs.copyFileSync(DB_PATH, tmp);
+
+    // Nunca entregar um backup quebrado: confere se a cópia abre e tem dados.
+    const conferencia = new Database(tmp, { readonly: true });
+    const tabelas = conferencia.prepare("SELECT COUNT(*) c FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").get().c;
+    const usuarios = conferencia.prepare('SELECT COUNT(*) c FROM users').get().c;
+    conferencia.close();
+    if (!tabelas || !usuarios) throw new Error(`cópia inconsistente (${tabelas} tabelas, ${usuarios} usuários)`);
+
+    res.download(tmp, `database.backup-${stamp}.sqlite`, () => limparTemp(tmp));
+  } catch (e) {
+    limparTemp(tmp);
+    console.error('Backup err:', e.message);
+    res.status(500).json({ error: 'Falha ao gerar o backup: ' + e.message });
+  }
 });
+
+// Abrir a cópia para conferir cria -wal e -shm ao lado dela; os três somem juntos.
+function limparTemp(base) {
+  for (const f of [base, `${base}-wal`, `${base}-shm`]) {
+    try { fs.unlinkSync(f); } catch {}
+  }
+}
+// Sobras de um download interrompido não ficam acumulando na pasta do banco.
+(function limparTempAntigos() {
+  try {
+    const dir = path.dirname(DB_PATH);
+    for (const f of fs.readdirSync(dir)) {
+      if (f.startsWith('backup-tmp-')) { try { fs.unlinkSync(path.join(dir, f)); } catch {} }
+    }
+  } catch {}
+})();
 
 // Upload de anexos. Retorna metadata (id, name, mime, size) que o cliente
 // guarda em updates.files. Os bytes ficam em UPLOAD_DIR/<id>.

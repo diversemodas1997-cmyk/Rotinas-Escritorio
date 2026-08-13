@@ -2665,6 +2665,33 @@ function AdminPanel({ users, onUpdateRole, onCreateUser, onDeleteUser, onClose, 
       setWipeStep("confirm");
     } finally { setWiping(false); }
   };
+  // Backup do banco pela própria tela: usa a sessão do admin que já está
+  // aberta, sem depender de token avulso nem do console do navegador.
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [backupMsg, setBackupMsg] = useState("");
+  const baixarBackup = async () => {
+    setBackupBusy(true); setBackupMsg("");
+    try {
+      const r = await fetch(`${API_URL}/api/admin/backup`, { headers: { Authorization: `Bearer ${getToken()}` } });
+      if (!r.ok) {
+        let msg = `Erro ${r.status}`;
+        try { msg = (await r.json()).error || msg; } catch {}
+        setBackupMsg(`Falhou: ${msg}`);
+        return;
+      }
+      const blob = await r.blob();
+      const carimbo = new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-");
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `database.backup-${carimbo}.sqlite`;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+      setBackupMsg(`Baixado: ${(blob.size / 1024).toFixed(0)} KB — confira na pasta de downloads.`);
+    } catch (e) {
+      setBackupMsg("Falhou: sem conexão com o servidor.");
+    } finally { setBackupBusy(false); }
+  };
+
   const confirmWipe = async () => {
     setWiping(true); setWipeResult("");
     try {
@@ -2705,6 +2732,23 @@ function AdminPanel({ users, onUpdateRole, onCreateUser, onDeleteUser, onClose, 
               <div style={{ fontSize: 10, color: "#778ca3", fontWeight: 600 }}>{s.label}</div>
             </div>
           ))}
+        </div>
+
+        {/* Backup do banco */}
+        <div style={{ padding: "12px 24px", borderBottom: "1px solid #2a2d35" }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: "#778ca3", textTransform: "uppercase", letterSpacing: ".5px", marginBottom: 8 }}>Backup</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, background: "#23262e", border: "1px solid #333", borderRadius: 10, padding: "10px 12px" }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 12.5, fontWeight: 600, color: "#e8eaed" }}>Baixar cópia do banco de dados</div>
+              <div style={{ fontSize: 10.5, color: "#778ca3", marginTop: 2 }}>
+                {backupMsg || "Arquivo .sqlite com tudo: usuários, quadros, tarefas, relatórios e histórico."}
+              </div>
+            </div>
+            <button onClick={baixarBackup} disabled={backupBusy}
+              style={{ background: backupBusy ? "#333" : "#00c875", color: "#fff", border: "none", borderRadius: 8, padding: "9px 14px", fontSize: 12, fontWeight: 700, cursor: backupBusy ? "default" : "pointer", whiteSpace: "nowrap" }}>
+              {backupBusy ? "Baixando..." : "⬇ Baixar backup"}
+            </button>
+          </div>
         </div>
 
         {/* Permissions legend */}
