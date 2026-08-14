@@ -3534,11 +3534,27 @@ function SyncIndicator() {
 }
 
 // ─── BOARDS SIDEBAR ──────────────────────────────────────────────────────────
-function BoardsSidebar({ folders, boards, currentBoardId, onSelectBoard, onNewBoard, onNewFolder, onRenameBoard, onRenameFolder, onDeleteBoard, onDeleteFolder, onManageAccess, isAdmin, collapsed, onToggleCollapsed, collapsedFolders, onToggleFolder }) {
+// Número de alterações acumuladas no quadro, antes do nome. Vermelho pulsando
+// para puxar o olho mesmo com a barra lateral na periferia da visão.
+const BOARD_BADGE_STYLE = {
+  background: "#e2445c", color: "#fff", fontSize: 10, fontWeight: 800, lineHeight: 1,
+  minWidth: 16, height: 16, borderRadius: 8, padding: "0 4px", flexShrink: 0,
+  display: "inline-flex", alignItems: "center", justifyContent: "center",
+  animation: "boardBadgePulse 1.4s ease-in-out infinite",
+};
+const BOARD_NAME_GLOW = { color: "#ffd479", fontWeight: 700, animation: "boardNameGlow 1.6s ease-in-out infinite" };
+
+function BoardsSidebar({ folders, boards, currentBoardId, onSelectBoard, onNewBoard, onNewFolder, onRenameBoard, onRenameFolder, onDeleteBoard, onDeleteFolder, onManageAccess, isAdmin, collapsed, onToggleCollapsed, collapsedFolders, onToggleFolder, badges = {} }) {
+  // Recolhida a lista some, mas o aviso não pode sumir junto: o total vai para
+  // o botão de expandir.
+  const totalBadge = Object.values(badges).reduce((a, n) => a + (n || 0), 0);
   if (collapsed) {
     return (
       <div style={{ width: 38, background: "#1a1d23", borderRight: "1px solid #2a2d35", display: "flex", flexDirection: "column", alignItems: "center", padding: "10px 0", flexShrink: 0 }}>
-        <button onClick={onToggleCollapsed} title="Expandir" style={{ background: "transparent", border: "none", color: "#778ca3", fontSize: 18, cursor: "pointer", padding: 6 }}>☰</button>
+        <button onClick={onToggleCollapsed} title={totalBadge > 0 ? `${totalBadge} alteração(ões) em outros quadros` : "Expandir"} style={{ background: "transparent", border: "none", color: "#778ca3", fontSize: 18, cursor: "pointer", padding: 6, position: "relative" }}>
+          ☰
+          {totalBadge > 0 && <span style={{ ...BOARD_BADGE_STYLE, position: "absolute", top: 0, right: -2 }}>{totalBadge > 99 ? "99+" : totalBadge}</span>}
+        </button>
       </div>
     );
   }
@@ -3574,12 +3590,16 @@ function BoardsSidebar({ folders, boards, currentBoardId, onSelectBoard, onNewBo
                   )}
                   {folderBoards.map(b => {
                     const active = b.id === currentBoardId;
+                    const badge = badges[b.id] || 0;
                     return (
-                      <div key={b.id} onClick={() => onSelectBoard(b.id)} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 10px 5px 28px", cursor: "pointer", background: active ? "rgba(108,92,231,.15)" : "transparent", borderLeft: active ? "3px solid #6c5ce7" : "3px solid transparent", color: active ? "#fff" : "#c8cdd4", fontSize: 12 }}
+                      <div key={b.id} onClick={() => onSelectBoard(b.id)}
+                        title={badge > 0 ? `${badge} alteraç${badge > 1 ? "ões" : "ão"} desde a última vez que você abriu` : undefined}
+                        style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 10px 5px 28px", cursor: "pointer", background: active ? "rgba(108,92,231,.15)" : "transparent", borderLeft: active ? "3px solid #6c5ce7" : "3px solid transparent", color: active ? "#fff" : "#c8cdd4", fontSize: 12 }}
                         onMouseEnter={e => { if (!active) e.currentTarget.style.background = "rgba(255,255,255,.03)"; }}
                         onMouseLeave={e => { if (!active) e.currentTarget.style.background = "transparent"; }}>
                         <span style={{ fontSize: 12 }}>{b.icon}</span>
-                        <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{b.name}</span>
+                        {badge > 0 && <span style={BOARD_BADGE_STYLE}>{badge > 99 ? "99+" : badge}</span>}
+                        <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", ...(badge > 0 ? BOARD_NAME_GLOW : null) }}>{b.name}</span>
                         {isAdmin && (
                           <span style={{ display: "flex", gap: 2, opacity: 0.5 }} onClick={e => e.stopPropagation()}>
                             <button title="Gerenciar acesso ao quadro" onClick={() => onManageAccess(b)} style={{ background: "transparent", border: "none", color: "#778ca3", cursor: "pointer", fontSize: 11, padding: 0, lineHeight: 1 }}>👥</button>
@@ -4045,6 +4065,8 @@ function Dashboard({ currentUser, onLogout }) {
   // ─── SWITCH BOARD: refetch tasks/columns scoped to the new board ──────────
   const switchBoard = async (boardId) => {
     if (!boardId || boardId === currentBoardId) return;
+    // Abrir o quadro é "ver": o número some na hora, sem esperar o próximo poll.
+    markBoardSeen(boardId);
     setCurrentBoardId(boardId);
     localStorage.setItem("rotina_board", boardId);
     const [tasksData, colsData] = await Promise.all([
@@ -4263,6 +4285,59 @@ function Dashboard({ currentUser, onLogout }) {
     }, 2000);
     return () => clearInterval(id);
   }, [dataLoaded, currentBoardId]);
+
+  // ─── NOTIFICAÇÕES POR QUADRO (número na barra lateral) ────────────────────
+  // Cada quadro mostra, antes do nome, quantas alterações acumulou desde a
+  // última vez que o usuário o abriu — e o nome brilha enquanto houver algo.
+  // O poll de tarefas só carrega o quadro ATIVO, então a contagem dos outros
+  // vem do servidor. A marca "visto por último" usa sempre o relógio DELE:
+  // com o relógio do navegador, um PC atrasado inventaria alterações e um
+  // adiantado esconderia.
+  const BOARD_SEEN_KEY = "rotina_board_seen";
+  const [boardBadges, setBoardBadges] = useState({});
+  const serverNowRef = useRef(0);
+  const boardSeenRef = useRef((() => {
+    try { return JSON.parse(localStorage.getItem(BOARD_SEEN_KEY) || "{}") || {}; } catch { return {}; }
+  })());
+  const persistBoardSeen = () => {
+    try { localStorage.setItem(BOARD_SEEN_KEY, JSON.stringify(boardSeenRef.current)); } catch {}
+  };
+  const markBoardSeen = (boardId, ms) => {
+    if (!boardId) return;
+    boardSeenRef.current = { ...boardSeenRef.current, [boardId]: ms || serverNowRef.current || Date.now() };
+    persistBoardSeen();
+    setBoardBadges(prev => (prev[boardId] ? { ...prev, [boardId]: 0 } : prev));
+  };
+  const currentBoardIdRef = useRef(currentBoardId);
+  useEffect(() => { currentBoardIdRef.current = currentBoardId; }, [currentBoardId]);
+
+  useEffect(() => {
+    if (!dataLoaded) return;
+    let cancelled = false;
+    const tick = async () => {
+      if (cancelled || document.hidden) return;
+      const res = await apiCall(`/boards/activity?seen=${encodeURIComponent(JSON.stringify(boardSeenRef.current))}`);
+      if (cancelled || !res) return;
+      serverNowRef.current = res.now;
+      const counts = { ...(res.counts || {}) };
+      const next = { ...boardSeenRef.current };
+      // O quadro aberto está sendo visto agora: nunca acumula, e a marca avança.
+      const active = currentBoardIdRef.current;
+      if (active) { counts[active] = 0; next[active] = res.now; }
+      // Quadro que ainda não tem marca adota o agora do servidor. Sem isso ele
+      // ficaria zerado para sempre e nunca avisaria nada.
+      for (const id of Object.keys(counts)) if (!next[id]) next[id] = res.now;
+      boardSeenRef.current = next;
+      persistBoardSeen();
+      setBoardBadges(counts);
+    };
+    tick();
+    const id = setInterval(tick, 10000);
+    const onVisibility = () => { if (!document.hidden) tick(); };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => { cancelled = true; clearInterval(id); document.removeEventListener("visibilitychange", onVisibility); };
+    // eslint-disable-next-line
+  }, [dataLoaded]);
 
   // ─── ALERTA DE ALTERAÇÕES NO QUADRO ────────────────────────────────────────
   // Qualquer mudança vinda do servidor (mensagem nova, tarefa/subitem criado ou
@@ -4963,13 +5038,15 @@ function Dashboard({ currentUser, onLogout }) {
                     </div>
                     {fb.map(b => {
                       const active = b.id === currentBoardId;
+                      const badge = boardBadges[b.id] || 0;
                       return (
                         <div key={b.id} onClick={() => { switchBoard(b.id); setShowBoardPicker(false); }}
                           style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 14px", cursor: "pointer", color: active ? "#fff" : "#c8cdd4", background: active ? "rgba(108,92,231,.15)" : "transparent", fontSize: 12, fontWeight: active ? 600 : 500 }}
                           onMouseEnter={e => { if (!active) e.currentTarget.style.background = "rgba(255,255,255,.04)"; }}
                           onMouseLeave={e => { if (!active) e.currentTarget.style.background = "transparent"; }}>
                           <span style={{ fontSize: 13 }}>{b.icon}</span>
-                          <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{b.name}</span>
+                          {badge > 0 && <span style={BOARD_BADGE_STYLE}>{badge > 99 ? "99+" : badge}</span>}
+                          <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", ...(badge > 0 ? BOARD_NAME_GLOW : null) }}>{b.name}</span>
                           {active && <span style={{ color: "#6c5ce7", fontWeight: 700 }}>✓</span>}
                         </div>
                       );
@@ -5016,6 +5093,7 @@ function Dashboard({ currentUser, onLogout }) {
       {/* CONTENT */}
       <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
         <BoardsSidebar
+          badges={boardBadges}
           folders={folders}
           boards={boards}
           currentBoardId={currentBoardId}
@@ -5134,6 +5212,20 @@ function Dashboard({ currentUser, onLogout }) {
 
       <style>{`
         @keyframes slideIn { from { transform: translateX(20px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+        /* Aviso de alterações por quadro: o nome brilha e o número pulsa. */
+        @keyframes boardNameGlow {
+          0%, 100% { text-shadow: none; }
+          50% { text-shadow: 0 0 10px rgba(253,171,61,.95), 0 0 18px rgba(253,171,61,.5); }
+        }
+        @keyframes boardBadgePulse {
+          0%, 100% { transform: scale(1); box-shadow: 0 0 0 rgba(226,68,92,0); }
+          50% { transform: scale(1.12); box-shadow: 0 0 10px rgba(226,68,92,.9); }
+        }
+        /* Quem pediu menos animação continua vendo o número e a cor, sem pisca-pisca. */
+        @media (prefers-reduced-motion: reduce) {
+          @keyframes boardNameGlow { 0%, 100% { text-shadow: 0 0 8px rgba(253,171,61,.7); } }
+          @keyframes boardBadgePulse { 0%, 100% { transform: none; } }
+        }
         @keyframes syncSpin { to { transform: rotate(360deg); } }
         @keyframes hotRow {
           0%, 100% { box-shadow: inset 0 0 0 2px rgba(253,171,61,.45); }

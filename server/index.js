@@ -187,6 +187,15 @@ db.exec(`
 (function migrateSubitemPriority() {
   const cols = db.prepare("PRAGMA table_info(subitems)").all().map(c => c.name);
   if (!cols.includes('priority')) db.exec("ALTER TABLE subitems ADD COLUMN priority TEXT DEFAULT 'Média'");
+  // Carimbo de alteração: é por ele que a barra lateral conta quantas mudanças
+  // cada quadro acumulou desde a última vez que o usuário olhou. Tarefas já
+  // tinham updated_at; subitens não.
+  // ALTER TABLE não aceita CURRENT_TIMESTAMP como default (não é constante),
+  // então a coluna entra sem default e as linhas antigas recebem o agora.
+  if (!cols.includes('updated_at')) {
+    db.exec("ALTER TABLE subitems ADD COLUMN updated_at DATETIME");
+    db.exec("UPDATE subitems SET updated_at=CURRENT_TIMESTAMP WHERE updated_at IS NULL");
+  }
 })();
 
 // Non-destructive migration: add scope/parent_column_id to existing databases
@@ -885,6 +894,46 @@ function userCanAccessBoard(user, boardId) {
   return getAccessibleBoardIds(user.name, user.id).has(boardId);
 }
 
+// ===== Atividade por quadro =====
+// A barra lateral mostra um número no começo do nome de cada quadro com quantas
+// alterações ele acumulou desde a última vez que o usuário o abriu. O poll só
+// carrega o quadro ATIVO, então essa contagem tem de vir do servidor.
+//
+// O cliente manda a marca "visto por último" de cada quadro em epoch ms; o
+// relógio de referência é sempre o do servidor (devolvido em `now`), para
+// diferença de horário entre as máquinas não inventar nem esconder alteração.
+// Quadro sem marca conta zero: quem entra agora não deve levar um histórico
+// inteiro na cara.
+function sqlTimestamp(ms) {
+  return new Date(ms).toISOString().slice(0, 19).replace('T', ' ');
+}
+app.get('/api/boards/activity', auth, (req, res) => {
+  let seen = {};
+  try { seen = JSON.parse(req.query.seen || '{}') || {}; } catch { seen = {}; }
+  const now = Date.now();
+
+  let boardIds = db.prepare('SELECT id FROM boards').all().map(b => b.id);
+  if (req.user.role !== 'admin') {
+    const accessible = getAccessibleBoardIds(req.user.name, req.user.id);
+    boardIds = boardIds.filter(id => accessible.has(id));
+  }
+
+  const qTasks = db.prepare('SELECT COUNT(*) c FROM tasks WHERE board_id=? AND updated_at > ?');
+  const qSubs = db.prepare('SELECT COUNT(*) c FROM subitems s JOIN tasks t ON t.id=s.task_id WHERE t.board_id=? AND s.updated_at > ?');
+  const qUpdates = db.prepare(`SELECT COUNT(*) c FROM updates u WHERE u.created_at > ? AND u.author <> ? AND (
+      (u.target_type='task' AND u.target_id IN (SELECT id FROM tasks WHERE board_id=?))
+   OR (u.target_type='subitem' AND u.target_id IN (SELECT s.id FROM subitems s JOIN tasks t ON t.id=s.task_id WHERE t.board_id=?)))`);
+
+  const counts = {};
+  for (const id of boardIds) {
+    const raw = Number(seen[id]);
+    if (!Number.isFinite(raw) || raw <= 0) { counts[id] = 0; continue; }
+    const ts = sqlTimestamp(Math.min(raw, now));
+    counts[id] = qTasks.get(id, ts).c + qSubs.get(id, ts).c + qUpdates.get(ts, req.user.name, id, id).c;
+  }
+  res.json({ now, counts });
+});
+
 app.get('/api/boards', auth, (req, res) => {
   let rows = db.prepare('SELECT * FROM boards ORDER BY sort_order, created_at').all();
   if (req.user.role !== 'admin') {
@@ -1157,12 +1206,12 @@ app.put('/api/subitems/:id',auth,(req,res)=>{
     : s.custom;
   const withTimes = applyAutoTimes({ kind: 'subitem', boardId, taskId: s.task_id, prevStatus: s.status, nextStatus, prevCustom: s.custom, nextCustom });
   if (withTimes) nextCustom = withTimes;
-  db.prepare('UPDATE subitems SET name=?,owner=?,status=?,priority=?,responsible=?,total=?,deadline=?,custom=? WHERE id=?')
+  db.prepare('UPDATE subitems SET name=?,owner=?,status=?,priority=?,responsible=?,total=?,deadline=?,custom=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
     .run(name ?? s.name, owner ?? s.owner, nextStatus, priority ?? s.priority, responsible ? JSON.stringify(responsible) : s.responsible, total ?? s.total, deadline !== undefined ? deadline : s.deadline, nextCustom, req.params.id);
   let out = {}; try { out = JSON.parse(nextCustom || '{}'); } catch {}
   res.json({ success: true, custom: out });
 });
-app.post('/api/subitems',auth,(req,res)=>{const{id,task_id,name,owner,status,priority,responsible,total,deadline,custom}=req.body;const m=db.prepare('SELECT MAX(sort_order) as m FROM subitems WHERE task_id=?').get(task_id);db.prepare('INSERT INTO subitems (id,task_id,name,owner,status,priority,responsible,total,deadline,custom,sort_order) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(id,task_id,name||'Novo subitem',owner||'',status||'Não iniciado',priority||'Média',JSON.stringify(responsible||[]),total||0,deadline||null,JSON.stringify(custom||{}),(m?.m||0)+1);res.json({success:true});});
+app.post('/api/subitems',auth,(req,res)=>{const{id,task_id,name,owner,status,priority,responsible,total,deadline,custom}=req.body;const m=db.prepare('SELECT MAX(sort_order) as m FROM subitems WHERE task_id=?').get(task_id);db.prepare('INSERT INTO subitems (id,task_id,name,owner,status,priority,responsible,total,deadline,custom,sort_order,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)').run(id,task_id,name||'Novo subitem',owner||'',status||'Não iniciado',priority||'Média',JSON.stringify(responsible||[]),total||0,deadline||null,JSON.stringify(custom||{}),(m?.m||0)+1);res.json({success:true});});
 
 app.post('/api/updates',auth,(req,res)=>{const{id,targetType,targetId,text,mentions,files}=req.body;db.prepare('INSERT INTO updates (id,target_type,target_id,author,text,mentions,files) VALUES(?,?,?,?,?,?,?)').run(id,targetType,targetId,req.user.name,text||'',JSON.stringify(mentions||[]),JSON.stringify(files||[]));res.json({success:true});});
 app.delete('/api/updates/:id',auth,(req,res)=>{const u=db.prepare('SELECT author FROM updates WHERE id=?').get(req.params.id);if(!u)return res.status(404).json({error:'Relatório não encontrado'});if(u.author!==req.user.name&&req.user.role!=='admin')return res.status(403).json({error:'Apenas o autor pode excluir'});db.prepare('DELETE FROM updates WHERE id=?').run(req.params.id);res.json({success:true});});
