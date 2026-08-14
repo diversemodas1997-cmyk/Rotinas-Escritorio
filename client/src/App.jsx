@@ -1,4 +1,5 @@
 import { useState, useMemo, useRef, useEffect } from "react";
+import { flushSync } from "react-dom";
 
 // ─── API CLIENT ──────────────────────────────────────────────────────────────
 const API_URL = window.location.hostname === "localhost" ? "http://localhost:3001" : "";
@@ -99,6 +100,71 @@ const keepTaskTreeOrder = (incoming, onScreen) => {
   return keepOrder(incoming, onScreen).map(t => ({
     ...t, subitems: keepOrder(t.subitems || [], subsById.get(t.id) || []),
   }));
+};
+
+// ─── ANIMAÇÃO DA REORDENAÇÃO (FLIP) ─────────────────────────────────────────
+// Sem animação a linha teleporta e o usuário não percebe que o quadro mudou —
+// que era metade da queixa original. Aqui medimos onde cada linha está (First),
+// aplicamos a mudança de estado de forma síncrona (Last), devolvemos cada uma
+// visualmente para o lugar antigo (Invert) e soltamos com transição (Play).
+// As linhas se marcam com data-flip-id ("t:<id>" para tarefa, "s:<id>" para
+// subitem).
+const FLIP_MS = 260;
+const flipTops = () => {
+  const map = new Map();
+  document.querySelectorAll("[data-flip-id]").forEach(el => map.set(el.dataset.flipId, el.getBoundingClientRect().top));
+  return map;
+};
+const flipReorder = (applyChange) => {
+  const reduceMotion = typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (reduceMotion) { applyChange(); return; }
+
+  const before = flipTops();
+  // Síncrono: precisamos do DOM já reposicionado para medir o destino.
+  flushSync(applyChange);
+
+  const nodes = Array.from(document.querySelectorAll("[data-flip-id]"));
+  const deltas = new Map();
+  for (const el of nodes) {
+    const prevTop = before.get(el.dataset.flipId);
+    if (prevTop !== undefined) deltas.set(el.dataset.flipId, prevTop - el.getBoundingClientRect().top);
+  }
+
+  const moved = [];
+  for (const el of nodes) {
+    const id = el.dataset.flipId;
+    if (!deltas.has(id)) continue;
+    let dy = deltas.get(id);
+    // O subitem mora dentro do bloco da tarefa: se a tarefa inteira andou, esse
+    // deslocamento já vem embutido na medida absoluta e seria aplicado duas
+    // vezes. Descontamos o movimento do pai.
+    if (id.startsWith("s:")) {
+      const parentId = el.closest('[data-flip-id^="t:"]')?.dataset.flipId;
+      if (parentId && deltas.has(parentId)) dy -= deltas.get(parentId);
+    }
+    if (!dy) continue;
+    moved.push({ el, prevTransition: el.style.transition });
+    el.style.transition = "none";
+    el.style.transform = `translateY(${dy}px)`;
+  }
+  if (moved.length === 0) return;
+
+  // Obriga o navegador a comprometer o estado invertido antes de soltar. Sem
+  // isso ele coalesce as duas escritas de transform e a transição nunca roda.
+  void document.body.offsetHeight;
+
+  for (const { el } of moved) {
+    el.style.transition = `transform ${FLIP_MS}ms cubic-bezier(.2,.7,.3,1)`;
+    el.style.transform = "";
+  }
+  // Devolve a transição que o React tinha posto: sobrescrever e deixar assim
+  // mataria o efeito de hover das linhas de subitem.
+  setTimeout(() => {
+    for (const { el, prevTransition } of moved) {
+      el.style.transition = prevTransition;
+      el.style.transform = "";
+    }
+  }, FLIP_MS + 60);
 };
 const PEOPLE_COLORS = { Gabriela: "#ff642e", Camila: "#fdab3d", Junior: "#a25ddc", Ana: "#00c875", Pedro: "#579bfc", Lucas: "#e2445c" };
 
@@ -964,7 +1030,7 @@ function ChatBubble({ count, onClick }) {
 }
 
 // ─── COLUMN HEADER ───────────────────────────────────────────────────────────
-function ColHeader({ col, onRename, onDelete, onToggleDeadline, onChangeType, onDuplicate, onHide, canDelete = true }) {
+function ColHeader({ col, onRename, onDelete, onToggleDeadline, onChangeType, onDuplicate, onHide, onSetAutoTime, canDelete = true }) {
   const [menu, setMenu] = useState(false);
   const [showTypeMenu, setShowTypeMenu] = useState(false);
   const ref = useRef(null);
@@ -1023,6 +1089,13 @@ function ColHeader({ col, onRename, onDelete, onToggleDeadline, onChangeType, on
           {/* Toggle deadline (date only) */}
           {col.type === "date" && menuItem(col.isDeadline ? "⏰" : "⏰", col.isDeadline ? "Desativar prazo" : "Ativar como prazo", "#fdab3d", onToggleDeadline)}
 
+          {/* Preenchimento automático (horário apenas). Clicar de novo na opção
+              já marcada desliga o automático e a coluna volta a ser manual. */}
+          {col.type === "time" && onSetAutoTime && (<>
+            {menuItem("▶", col.autoTime === "start" ? "Início automático (ativo)" : "Preencher no \"Em andamento\"", "#00c875", () => onSetAutoTime(col.autoTime === "start" ? null : "start"))}
+            {menuItem("⏹", col.autoTime === "end" ? "Fim automático (ativo)" : "Preencher no \"Feito\"", "#00c875", () => onSetAutoTime(col.autoTime === "end" ? null : "end"))}
+          </>)}
+
           {/* Duplicate */}
           {onDuplicate && menuItem("📋", "Duplicar coluna", "#579bfc", onDuplicate)}
 
@@ -1047,10 +1120,10 @@ function ColHeader({ col, onRename, onDelete, onToggleDeadline, onChangeType, on
 
 // ─── ADD COLUMN MODAL ────────────────────────────────────────────────────────
 function AddColumnModal({ onClose, onAdd, columns, title: modalTitle, linkParent }) {
-  const [name, setName] = useState(""); const [type, setType] = useState("text"); const [isDeadline, setIsDeadline] = useState(false); const [copyFrom, setCopyFrom] = useState(""); const [parentFor, setParentFor] = useState("");
+  const [name, setName] = useState(""); const [type, setType] = useState("text"); const [isDeadline, setIsDeadline] = useState(false); const [copyFrom, setCopyFrom] = useState(""); const [parentFor, setParentFor] = useState(""); const [autoTime, setAutoTime] = useState(null);
   const types = [{ value: "text", label: "Texto", icon: "📝" }, { value: "number", label: "Número", icon: "🔢" }, { value: "date", label: "Data", icon: "📅" }, { value: "time", label: "Horário", icon: "🕐" }, { value: "status", label: "Status", icon: "🔵" }, { value: "people", label: "Pessoas", icon: "👥" }, { value: "priority", label: "Prioridade", icon: "🔴" }];
   const numericParents = linkParent ? columns.filter(c => c.type === "number") : [];
-  const handleAdd = () => { if (!name.trim()) return; const id = "col_" + Date.now(); const col = { id, name: name.trim(), type, field: id, builtIn: false, isDeadline: type === "date" && isDeadline, width: type === "people" ? "110px" : type === "status" || type === "priority" ? "110px" : type === "date" ? "100px" : type === "time" ? "90px" : "80px" }; if (linkParent && type === "number" && parentFor) col.parentColumnId = parentFor; onAdd(col); onClose(); };
+  const handleAdd = () => { if (!name.trim()) return; const id = "col_" + Date.now(); const col = { id, name: name.trim(), type, field: id, builtIn: false, isDeadline: type === "date" && isDeadline, autoTime: type === "time" ? autoTime : null, width: type === "people" ? "110px" : type === "status" || type === "priority" ? "110px" : type === "date" ? "100px" : type === "time" ? "90px" : "80px" }; if (linkParent && type === "number" && parentFor) col.parentColumnId = parentFor; onAdd(col); onClose(); };
   const handleCopy = () => { if (!copyFrom) return; const src = columns.find(c => c.id === copyFrom); if (!src) return; const id = "col_" + Date.now(); const col = { ...src, id, field: id, name: src.name + " (cópia)", builtIn: false }; if (linkParent) col.parentColumnId = src.id; onAdd(col); onClose(); };
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, backdropFilter: "blur(4px)" }} onClick={onClose}>
@@ -1069,6 +1142,25 @@ function AddColumnModal({ onClose, onAdd, columns, title: modalTitle, linkParent
           {types.map(t => (<div key={t.value} onClick={() => setType(t.value)} style={{ padding: "10px 8px", borderRadius: 8, border: type === t.value ? "2px solid #6c5ce7" : "1px solid #3a3d45", background: type === t.value ? "rgba(108,92,231,.12)" : "#1a1d23", cursor: "pointer", textAlign: "center" }}><div style={{ fontSize: 18 }}>{t.icon}</div><div style={{ fontSize: 11, fontWeight: 600, color: "#e8eaed", marginTop: 2 }}>{t.label}</div></div>))}
         </div>
         {type === "date" && (<div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 10px", background: "#1a1d23", borderRadius: 8, marginBottom: 12, border: "1px solid #333" }}><div><div style={{ fontSize: 12, fontWeight: 600, color: "#e8eaed" }}>Usar como prazo</div></div><div onClick={() => setIsDeadline(!isDeadline)} style={{ width: 36, height: 18, borderRadius: 9, background: isDeadline ? "#6c5ce7" : "#444", cursor: "pointer", position: "relative" }}><div style={{ width: 14, height: 14, borderRadius: "50%", background: "#fff", position: "absolute", top: 2, left: isDeadline ? 20 : 2, transition: "left .2s" }} /></div></div>)}
+        {type === "time" && (
+          <div style={{ padding: "10px 12px", background: "#1a1d23", borderRadius: 8, marginBottom: 12, border: "1px solid #333" }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "#e8eaed", marginBottom: 2 }}>Preenchimento automático</div>
+            <div style={{ fontSize: 11, color: "#778ca3", marginBottom: 8 }}>A hora do servidor entra sozinha quando o status muda. Só preenche se estiver vazio.</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
+              {[{ v: null, label: "Manual" }, { v: "start", label: "Início" }, { v: "end", label: "Fim" }].map(o => (
+                <div key={o.label} onClick={() => setAutoTime(o.v)}
+                  style={{ padding: "8px 6px", borderRadius: 8, border: autoTime === o.v ? "2px solid #00c875" : "1px solid #3a3d45", background: autoTime === o.v ? "rgba(0,200,117,.12)" : "#13151a", cursor: "pointer", textAlign: "center", fontSize: 11, fontWeight: 600, color: "#e8eaed" }}>
+                  {o.label}
+                </div>
+              ))}
+            </div>
+            {autoTime && (
+              <div style={{ fontSize: 11, color: "#00c875", marginTop: 8 }}>
+                Preenche quando o status virar “{autoTime === "start" ? "Em andamento" : "Feito"}”, e zera na virada do dia.
+              </div>
+            )}
+          </div>
+        )}
         {linkParent && type === "number" && numericParents.length > 0 && (
           <div style={{ padding: "8px 10px", background: "#1a1d23", borderRadius: 8, marginBottom: 12, border: "1px solid #333" }}>
             <div style={{ fontSize: 11, fontWeight: 600, color: "#a5b1c2", marginBottom: 6 }}>Σ Somar na coluna pai</div>
@@ -1300,7 +1392,8 @@ function BoardView({ tasks, setTasks, apiUpdateTask, apiUpdateSub, apiAddTask, a
                   onRename={v => { setColumns(p => p.map(c => c.id === col.id ? { ...c, name: v } : c)); if (apiUpdateColumn) apiUpdateColumn(col.id, { name: v }); }}
                   onDelete={!col.builtIn && perms.deleteColumns ? () => { if (apiDeleteColumn) apiDeleteColumn(col.id); else setColumns(p => p.filter(c => c.id !== col.id)); } : null}
                   onToggleDeadline={() => { const nv = !col.isDeadline; setColumns(p => p.map(c => c.id === col.id ? { ...c, isDeadline: nv } : c)); if (apiUpdateColumn) apiUpdateColumn(col.id, { isDeadline: nv }); }}
-                  onChangeType={(newType) => { setColumns(p => p.map(c => c.id === col.id ? { ...c, type: newType, isDeadline: newType === "date" ? c.isDeadline : false } : c)); if (apiUpdateColumn) apiUpdateColumn(col.id, { type: newType }); }}
+                  onSetAutoTime={apiUpdateColumn ? (v) => { setColumns(p => p.map(c => c.id === col.id ? { ...c, autoTime: v } : c)); apiUpdateColumn(col.id, { autoTime: v }); } : null}
+                  onChangeType={(newType) => { setColumns(p => p.map(c => c.id === col.id ? { ...c, type: newType, isDeadline: newType === "date" ? c.isDeadline : false, autoTime: newType === "time" ? c.autoTime : null } : c)); if (apiUpdateColumn) apiUpdateColumn(col.id, { type: newType }); }}
                   onDuplicate={() => { const newId = "col_" + Date.now(); const dup = { ...col, id: newId, field: newId, name: col.name + " (cópia)", builtIn: false }; setColumns(p => [...p, dup]); if (apiUpdateColumn) apiCall("/columns", { method: "POST", body: JSON.stringify(dup) }); }}
                   canDelete={col.builtIn ? true : perms.deleteColumns}
                 />
@@ -1328,7 +1421,7 @@ function BoardView({ tasks, setTasks, apiUpdateTask, apiUpdateSub, apiAddTask, a
             const subReorder = (newSubs) => { setTasks(prev => prev.map(t => t.id === task.id ? { ...t, subitems: newSubs } : t)); if (apiReorderSubitems) apiReorderSubitems(task.id, newSubs.map(s => s.id)); };
 
             return (
-              <div key={task.id}>
+              <div key={task.id} data-flip-id={`t:${task.id}`}>
                 <div
                   draggable
                   onDragStart={() => taskDrag.onDragStart(ti)}
@@ -1463,7 +1556,8 @@ function SubitemsBlock({ highlights = {}, onClearHighlight = () => {}, task, all
               onRename={null}
               onDelete={!col.builtIn && perms.deleteColumns ? () => { if (window.confirm(`Excluir a coluna "${col.name}" de TODAS as tarefas? Essa ação nao pode ser desfeita.`)) { if (apiDeleteColumn) apiDeleteColumn(col.id); else setColumns(p => p.filter(c => c.id !== col.id)); } } : null}
               onToggleDeadline={() => { const nv = !col.isDeadline; setColumns(p => p.map(c => c.id === col.id ? { ...c, isDeadline: nv } : c)); if (apiUpdateColumn) apiUpdateColumn(col.id, { isDeadline: nv }); }}
-              onChangeType={(newType) => { setColumns(p => p.map(c => c.id === col.id ? { ...c, type: newType, isDeadline: newType === "date" ? c.isDeadline : false } : c)); if (apiUpdateColumn) apiUpdateColumn(col.id, { type: newType }); }}
+              onSetAutoTime={apiUpdateColumn ? (v) => { setColumns(p => p.map(c => c.id === col.id ? { ...c, autoTime: v } : c)); apiUpdateColumn(col.id, { autoTime: v }); } : null}
+              onChangeType={(newType) => { setColumns(p => p.map(c => c.id === col.id ? { ...c, type: newType, isDeadline: newType === "date" ? c.isDeadline : false, autoTime: newType === "time" ? c.autoTime : null } : c)); if (apiUpdateColumn) apiUpdateColumn(col.id, { type: newType }); }}
               onDuplicate={() => { const newId = "col_" + Date.now(); const dup = { ...col, id: newId, field: newId, name: col.name + " (cópia)", builtIn: false, scope: 'subitem', taskId: task.id, parentColumnId: col.id }; setSubColumns(p => [...p, dup]); apiCall("/columns", { method: "POST", body: JSON.stringify(dup) }); }}
               onHide={HIDEABLE_NATIVE.includes(col.id) && perms.addColumns ? () => hideInTask(col.id) : null}
               canDelete={col.builtIn ? true : perms.deleteColumns}
@@ -1483,6 +1577,7 @@ function SubitemsBlock({ highlights = {}, onClearHighlight = () => {}, task, all
               onRename={v => apiUpdateSubColumn ? apiUpdateSubColumn(sc.id, { name: v }) : setSubColumns(p => p.map(c => c.id === sc.id ? { ...c, name: v } : c))}
               onDelete={perms.deleteColumns ? () => apiDeleteSubColumn ? apiDeleteSubColumn(sc.id) : setSubColumns(p => p.filter(c => c.id !== sc.id)) : null}
               onToggleDeadline={() => apiUpdateSubColumn ? apiUpdateSubColumn(sc.id, { isDeadline: !sc.isDeadline }) : setSubColumns(p => p.map(c => c.id === sc.id ? { ...c, isDeadline: !c.isDeadline } : c))}
+              onSetAutoTime={apiUpdateSubColumn ? (v) => apiUpdateSubColumn(sc.id, { autoTime: v }) : null}
               onChangeType={(newType) => apiUpdateSubColumn ? apiUpdateSubColumn(sc.id, { type: newType, isDeadline: newType === "date" ? sc.isDeadline : false }) : setSubColumns(p => p.map(c => c.id === sc.id ? { ...c, type: newType, isDeadline: newType === "date" ? c.isDeadline : false } : c))}
               onDuplicate={() => { const newId = "col_" + Date.now(); const dup = { ...sc, id: newId, field: newId, name: sc.name + " (cópia)", builtIn: false, taskId: task.id }; setSubColumns(p => [...p, dup]); apiCall("/columns", { method: "POST", body: JSON.stringify(dup) }); }}
               canDelete={perms.deleteColumns}
@@ -1497,6 +1592,7 @@ function SubitemsBlock({ highlights = {}, onClearHighlight = () => {}, task, all
         const isHot = !!highlights[hlKey];
         return (
         <div key={sub.id}
+          data-flip-id={`s:${sub.id}`}
           draggable
           onDragStart={() => subDrag.onDragStart(si)}
           onDragEnter={() => subDrag.onDragEnter(si)}
@@ -3977,55 +4073,127 @@ function Dashboard({ currentUser, onLogout }) {
     // eslint-disable-next-line
   }, [dataLoaded, currentBoardId]);
 
-  // ─── REORDENAÇÃO AUTOMÁTICA (ociosa) ──────────────────────────────────────
-  // A ordem por prioridade/status não é reaplicada no clique: isso fazia a linha
-  // fugir debaixo do cursor e o clique seguinte cair em outra tarefa. Em vez
-  // disso ela se reaplica sozinha assim que o usuário para de mexer — sem F5 —
-  // e a nova ordem é gravada no banco, valendo para todos os usuários.
+  // ─── REORDENAÇÃO AUTOMÁTICA ───────────────────────────────────────────────
+  // O quadro volta a se reorganizar na hora, como antes — mas a reordenação não
+  // é aplicada DENTRO do clique. Ali a linha sairia debaixo do cursor e o clique
+  // seguinte cairia em outra tarefa: era esse o bug de "mudei um status e o de
+  // outras mudou junto". Ela é aplicada no fim do gesto, quando o próximo clique
+  // não pode mais estar mirado numa linha prestes a se mover.
   const IDLE_REORDER_MS = 8000;
+  // A linha tem 38px (cellStyle). Afastar ~40px do ponto do clique significa que
+  // o cursor já deixou a faixa dela e está em trânsito, sem mirar em nada.
+  const ROW_ESCAPE_PX = 40;
+  // Toque não tem hover: lá o critério é um respiro depois de soltar o dedo,
+  // maior que o intervalo de um duplo-toque.
+  const TOUCH_SETTLE_MS = 500;
+
   const lastActivityRef = useRef(Date.now());
-  useEffect(() => {
-    const bump = () => { lastActivityRef.current = Date.now(); };
-    window.addEventListener("pointerdown", bump);
-    window.addEventListener("keydown", bump);
-    window.addEventListener("wheel", bump, { passive: true });
-    return () => {
-      window.removeEventListener("pointerdown", bump);
-      window.removeEventListener("keydown", bump);
-      window.removeEventListener("wheel", bump);
-    };
-  }, []);
-  // Espelho do estado: o intervalo lê a lista atual sem precisar de `tasks` nas
-  // deps (o que recriaria o timer a cada tecla digitada).
+  // { x, y, ready } — ponto do clique que deixou a ordem suja. `ready` vira true
+  // quando o gesto termina; até lá a reordenação fica represada.
+  const pendingReorderRef = useRef(null);
+  // Espelho do estado: os handlers leem a lista atual sem precisar de `tasks` nas
+  // deps (o que recriaria os listeners a cada tecla digitada).
   const tasksRef = useRef(tasks);
   useEffect(() => { tasksRef.current = tasks; }, [tasks]);
-  useEffect(() => {
-    if (!dataLoaded || !currentBoardId) return;
+
+  const canReorderNow = () => {
+    if (!dataLoaded || !currentBoardId) return false;
+    if (document.hidden) return false;
+    if (hasInFlightMutations()) return false;
+    const ae = document.activeElement;
+    if (ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.isContentEditable)) return false;
+    return true;
+  };
+
+  const flushReorder = () => {
     const idList = (arr) => (arr || []).map(x => x.id);
     const sameList = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
-    const tick = () => {
-      if (document.hidden) return;
-      if (Date.now() - lastActivityRef.current < IDLE_REORDER_MS) return;
-      if (hasInFlightMutations()) return;
-      const ae = document.activeElement;
-      if (ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.isContentEditable)) return;
+    const prev = tasksRef.current;
+    pendingReorderRef.current = null;
+    if (prev.length === 0) return;
+    const next = sortTaskTree(prev);
+    const prevSubs = new Map(prev.map(t => [t.id, idList(t.subitems)]));
+    const tasksMoved = !sameList(idList(prev), idList(next));
+    const subsMoved = next.filter(t => !sameList(prevSubs.get(t.id) || [], idList(t.subitems)));
+    // Nada fora do lugar → não mexe. Sem isso a tela daria saltos gratuitos.
+    if (!tasksMoved && subsMoved.length === 0) return;
 
-      const prev = tasksRef.current;
-      if (prev.length === 0) return;
-      const next = sortTaskTree(prev);
-      const prevSubs = new Map(prev.map(t => [t.id, idList(t.subitems)]));
-      const tasksMoved = !sameList(idList(prev), idList(next));
-      const subsMoved = next.filter(t => !sameList(prevSubs.get(t.id) || [], idList(t.subitems)));
-      // Nada fora do lugar → não mexe. Sem isso a tela daria saltos gratuitos.
-      if (!tasksMoved && subsMoved.length === 0) return;
+    flipReorder(() => setTasks(next));
+    if (tasksMoved) apiReorderTasks(idList(next));
+    subsMoved.forEach(t => apiReorderSubitems(t.id, idList(t.subitems)));
+  };
+  // Guardado em ref para os listeners (registrados uma vez) sempre chamarem a
+  // versão do render atual, sem closure velha.
+  const flushReorderRef = useRef(null);
+  flushReorderRef.current = flushReorder;
+  const canReorderNowRef = useRef(null);
+  canReorderNowRef.current = canReorderNow;
+  // Chamado nos gatilhos: se o momento não for seguro a pendência continua de pé
+  // e o tick periódico tenta de novo.
+  const tryFlushReorder = () => { if (canReorderNowRef.current()) flushReorderRef.current(); };
+  const tryFlushRef = useRef(null);
+  tryFlushRef.current = tryFlushReorder;
 
-      setTasks(next);
-      if (tasksMoved) apiReorderTasks(idList(next));
-      subsMoved.forEach(t => apiReorderSubitems(t.id, idList(t.subitems)));
+  // Última posição conhecida do cursor: no instante do clique ela é a própria
+  // posição do clique, que é o centro da faixa a proteger.
+  const pointerRef = useRef({ x: 0, y: 0 });
+  // Marca a ordem como suja. Chamado pelos setters quando status/prioridade mudam.
+  const markReorderPending = () => { pendingReorderRef.current = { ...pointerRef.current, ready: false }; };
+
+  useEffect(() => {
+    const bump = () => { lastActivityRef.current = Date.now(); };
+    const release = () => {
+      const p = pendingReorderRef.current;
+      if (!p || p.ready) return;
+      p.ready = true;
+      tryFlushRef.current();
     };
-    const id = setInterval(tick, 2000);
+    const onPointerMove = (e) => {
+      bump();
+      pointerRef.current = { x: e.clientX, y: e.clientY };
+      const p = pendingReorderRef.current;
+      if (!p || p.ready) return;
+      // Botão pressionado = arrasto em curso; reordenar no meio dele seria pior
+      // que o bug original.
+      if (e.buttons !== 0) return;
+      if (Math.hypot(e.clientX - p.x, e.clientY - p.y) < ROW_ESCAPE_PX) return;
+      release();
+    };
+    const onPointerUp = (e) => {
+      bump();
+      // Toque: sem hover, o gatilho é o respiro após soltar o dedo.
+      if (e.pointerType === "touch") setTimeout(release, TOUCH_SETTLE_MS);
+    };
+    // Rolar significa que o usuário abandonou aquela região da tela.
+    const onWheel = () => { bump(); release(); };
+    // Toque não gera pointermove antes do toque: registra a posição na descida.
+    const onPointerDown = (e) => { bump(); pointerRef.current = { x: e.clientX, y: e.clientY }; };
+    window.addEventListener("pointermove", onPointerMove, { passive: true });
+    window.addEventListener("pointerup", onPointerUp, { passive: true });
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", bump);
+    window.addEventListener("wheel", onWheel, { passive: true });
+    return () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", bump);
+      window.removeEventListener("wheel", onWheel);
+    };
+  }, []);
+
+  // Rede de segurança: cobre teclado, pendência que ficou represada por um PUT
+  // em voo, e o usuário que muda o status e simplesmente não mexe mais no mouse.
+  useEffect(() => {
+    if (!dataLoaded || !currentBoardId) return;
+    const id = setInterval(() => {
+      const p = pendingReorderRef.current;
+      const idle = Date.now() - lastActivityRef.current >= IDLE_REORDER_MS;
+      if (!p && !idle) return;
+      if (p && !p.ready && !idle) return;
+      tryFlushRef.current();
+    }, 2000);
     return () => clearInterval(id);
-    // eslint-disable-next-line
   }, [dataLoaded, currentBoardId]);
 
   // ─── ALERTA DE ALTERAÇÕES NO QUADRO ────────────────────────────────────────
@@ -4281,15 +4449,37 @@ function Dashboard({ currentUser, onLogout }) {
   }, [highlights]);
 
   // ─── API-BACKED SETTERS ────────────────────────────────────────────────────
+  // Quem grava os horários automáticos é o servidor (relógio único para todos),
+  // então o valor volta na resposta do PUT. Mesclamos SÓ as chaves das colunas
+  // automáticas: copiar o custom inteiro atropelaria o que o usuário digitou em
+  // outra célula enquanto a requisição estava no ar.
+  const autoTimeColIds = useMemo(
+    () => [...columns, ...subColumns].filter(c => c.autoTime).map(c => c.id),
+    [columns, subColumns]
+  );
+  const mergeAutoTimes = (kind, tid, sid, res) => {
+    if (!res?.custom || autoTimeColIds.length === 0) return;
+    const patch = {};
+    for (const id of autoTimeColIds) if (res.custom[id] !== undefined) patch[id] = res.custom[id];
+    if (Object.keys(patch).length === 0) return;
+    setTasks(prev => prev.map(t => {
+      if (t.id !== tid) return t;
+      if (kind === "task") return { ...t, custom: { ...(t.custom || {}), ...patch } };
+      return { ...t, subitems: t.subitems.map(s => s.id === sid ? { ...s, custom: { ...(s.custom || {}), ...patch } } : s) };
+    }));
+  };
+
   const apiUpdateTask = (tid, newTask) => {
     const current = tasks.find(t => t.id === tid);
     const updated = typeof newTask === "function" ? newTask(current || {}) : newTask;
     // A linha NÃO se move aqui. Reordenar no instante do clique fazia a tarefa
     // fugir debaixo do cursor e o clique seguinte cair em outra tarefa — era a
-    // causa de "mudei um status e o de outras mudou junto". Quem reorganiza é a
-    // reordenação ociosa, quando o usuário para de mexer.
+    // causa de "mudei um status e o de outras mudou junto". Só marcamos a ordem
+    // como suja; a reorganização sai no fim do gesto.
+    if (!!current && updated && (current.priority !== updated.priority || current.status !== updated.status)) markReorderPending();
     setTasks(prev => prev.map(t => t.id === tid ? (typeof newTask === "function" ? newTask(t) : newTask) : t));
-    apiCall(`/tasks/${tid}`, { method: "PUT", body: JSON.stringify(updated) });
+    apiCall(`/tasks/${tid}`, { method: "PUT", body: JSON.stringify(updated) })
+      .then(res => mergeAutoTimes("task", tid, null, res));
   };
 
   const apiUpdateSub = (tid, sid, newSub) => {
@@ -4297,11 +4487,13 @@ function Dashboard({ currentUser, onLogout }) {
     const current = (parent?.subitems || []).find(s => s.id === sid);
     const subToSave = typeof newSub === "function" ? (current ? newSub(current) : {}) : newSub;
     // Mesma regra das tarefas: o subitem não muda de lugar no clique.
+    if (!!current && subToSave && (current.priority !== subToSave.priority || current.status !== subToSave.status)) markReorderPending();
     setTasks(prev => prev.map(t => {
       if (t.id !== tid) return t;
       return { ...t, subitems: t.subitems.map(s => s.id === sid ? (typeof newSub === "function" ? newSub(s) : newSub) : s) };
     }));
-    apiCall(`/subitems/${sid}`, { method: "PUT", body: JSON.stringify(subToSave) });
+    apiCall(`/subitems/${sid}`, { method: "PUT", body: JSON.stringify(subToSave) })
+      .then(res => mergeAutoTimes("subitem", tid, sid, res));
   };
 
   const apiAddTask = (task) => {

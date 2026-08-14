@@ -196,6 +196,10 @@ db.exec(`
   if (!cols.includes('parent_column_id')) db.exec("ALTER TABLE columns_config ADD COLUMN parent_column_id TEXT");
   if (!cols.includes('task_id')) db.exec("ALTER TABLE columns_config ADD COLUMN task_id TEXT");
   if (!cols.includes('computed')) db.exec("ALTER TABLE columns_config ADD COLUMN computed TEXT");
+  // Colunas de horário podem ser marcadas para preenchimento automático pelo
+  // status: 'start' grava a hora quando a linha vira "Em andamento", 'end'
+  // quando vira "Feito". NULL = coluna de horário comum, preenchida na mão.
+  if (!cols.includes('auto_time')) db.exec("ALTER TABLE columns_config ADD COLUMN auto_time TEXT");
   // Clean up orphan subColumns without task_id (created before per-task scoping)
   db.prepare("DELETE FROM columns_config WHERE scope='subitem' AND task_id IS NULL").run();
 })();
@@ -378,10 +382,77 @@ seedDatabase();
 
 // ===== Daily rollover (00:00 America/Sao_Paulo) =====
 // BRT = UTC-3 year-round (Brazil abolished DST in 2019).
+// getTime() JÁ é epoch em UTC — somar getTimezoneOffset() contava o
+// deslocamento duas vezes e só dava certo com o servidor rodando em UTC (Render).
+// Rodando na máquina do escritório, que está em BRT, o horário saía 3h adiantado:
+// depois das 21:00 a data virava antes da hora e o rollover disparava cedo.
+function brtParts(d = new Date()) {
+  return new Date(d.getTime() - 3 * 3600000).toISOString();
+}
 function brtDateString(d = new Date()) {
-  const utcMs = d.getTime() + d.getTimezoneOffset() * 60000;
-  const brt = new Date(utcMs - 3 * 3600000);
-  return brt.toISOString().slice(0, 10);
+  return brtParts(d).slice(0, 10);
+}
+// "HH:MM" 24h, mesmo formato que o <input type="time"> do cliente guarda.
+// A hora sai daqui e não do navegador: o quadro é compartilhado, então o
+// registro tem de ser o mesmo relógio para todo mundo.
+function brtTimeString(d = new Date()) {
+  return brtParts(d).slice(11, 16);
+}
+
+// ===== Horários automáticos por status =====
+// Colunas de horário marcadas com auto_time recebem a hora do servidor quando a
+// linha ENTRA no status correspondente. Só preenche o que está vazio: o badge de
+// status cicla com um clique só, então regravar a cada passagem apagaria o
+// horário real que já tinha sido registrado.
+const AUTO_TIME_TRIGGER = { 'Em andamento': 'start', 'Feito': 'end' };
+
+// Colunas automáticas que aparecem naquela linha: as do quadro e, para
+// subitens, também as subcolunas daquela tarefa. Sem `slot`, devolve as duas.
+function autoTimeColumns(kind, boardId, taskId, slot) {
+  const where = slot ? 'auto_time=?' : "auto_time IN ('start','end')";
+  const p = slot ? [slot] : [];
+  return kind === 'task'
+    ? db.prepare(`SELECT id FROM columns_config WHERE ${where} AND scope='task' AND board_id=?`).all(...p, boardId)
+    : db.prepare(`SELECT id FROM columns_config WHERE ${where} AND board_id=? AND (scope='task' OR (scope='subitem' AND task_id=?))`).all(...p, boardId, taskId);
+}
+
+// O cliente reenvia o custom inteiro a cada edição. Se ele ainda não recebeu o
+// horário que o servidor acabou de gravar — o poll não passou, ou outro usuário
+// mudou o status agora — esse envio apagaria o registro. Chave AUSENTE quer
+// dizer "não sei deste valor": o que está gravado prevalece. Chave PRESENTE,
+// mesmo vazia, é decisão explícita de quem editou e passa direto.
+function preserveAutoTimes({ kind, stored, incoming, boardId, taskId }) {
+  if (!incoming || !boardId) return incoming;
+  const cols = autoTimeColumns(kind, boardId, taskId);
+  if (cols.length === 0) return incoming;
+  let prev = {};
+  try { prev = JSON.parse(stored || '{}'); } catch { prev = {}; }
+  const next = { ...incoming };
+  for (const c of cols) {
+    if (c.id in next) continue;
+    const v = prev[c.id];
+    if (v !== undefined && v !== null && v !== '') next[c.id] = v;
+  }
+  return next;
+}
+
+function applyAutoTimes({ kind, custom, boardId, taskId, prevStatus, nextStatus }) {
+  const slot = AUTO_TIME_TRIGGER[nextStatus];
+  if (!slot || nextStatus === prevStatus || !boardId) return null;
+  const cols = autoTimeColumns(kind, boardId, taskId, slot);
+  if (cols.length === 0) return null;
+
+  let obj = {};
+  try { obj = JSON.parse(custom || '{}'); } catch { obj = {}; }
+  const now = brtTimeString();
+  let changed = false;
+  for (const c of cols) {
+    const v = obj[c.id];
+    if (v !== undefined && v !== null && v !== '') continue;
+    obj[c.id] = now;
+    changed = true;
+  }
+  return changed ? JSON.stringify(obj) : null;
 }
 
 function runDailyRollover() {
@@ -399,7 +470,12 @@ function runDailyRollover() {
   const numericSubCols = db.prepare(
     "SELECT id, name, task_id FROM columns_config WHERE scope='subitem' AND type='number' AND (computed IS NULL OR computed='')"
   ).all();
-  const tasks = db.prepare('SELECT id, name, total_orders, total_cancellations, responsible, board_id FROM tasks').all();
+  // Horários automáticos são zerados na virada do dia. Sem isso, a regra "só
+  // preenche se estiver vazio" faria o horário ser gravado uma única vez na vida
+  // da tarefa — num quadro de rotina diária a função pararia de funcionar no dia
+  // seguinte. Os valores não vão para daily_snapshots: a tabela guarda REAL.
+  const autoTimeColIds = db.prepare("SELECT id FROM columns_config WHERE auto_time IN ('start','end')").all().map(c => c.id);
+  const tasks = db.prepare('SELECT id, name, total_orders, total_cancellations, responsible, custom, board_id FROM tasks').all();
   const taskById = new Map(tasks.map(t => [t.id, t]));
   const subitems = db.prepare('SELECT id, task_id, name, total, custom, responsible FROM subitems').all();
 
@@ -410,6 +486,7 @@ function runDailyRollover() {
   );
   const updSub = db.prepare('UPDATE subitems SET total=0, custom=? WHERE id=?');
   const updTask = db.prepare('UPDATE tasks SET total_orders=0, total_cancellations=0 WHERE id=?');
+  const updTaskCustom = db.prepare('UPDATE tasks SET custom=? WHERE id=?');
 
   const tx = db.transaction(() => {
     // Snapshot + zero subitem numeric columns
@@ -435,12 +512,25 @@ function runDailyRollover() {
         }
         if (col.id in custom) { delete custom[col.id]; customChanged = true; }
       }
+      // Horários automáticos voltam a ficar vazios para o dia novo.
+      for (const colId of autoTimeColIds) {
+        if (colId in custom) { delete custom[colId]; customChanged = true; }
+      }
       if ((s.total && Number(s.total) !== 0) || customChanged) {
         updSub.run(JSON.stringify(custom), s.id);
       }
     }
     // Snapshot + zero task totals
     for (const t of tasks) {
+      if (autoTimeColIds.length > 0) {
+        let custom = {};
+        try { custom = JSON.parse(t.custom || '{}'); } catch {}
+        let changed = false;
+        for (const colId of autoTimeColIds) {
+          if (colId in custom) { delete custom[colId]; changed = true; }
+        }
+        if (changed) updTaskCustom.run(JSON.stringify(custom), t.id);
+      }
       if (t.total_orders && Number(t.total_orders) !== 0) {
         insSnap.run(last, t.id, '', 'totalOrders', Number(t.total_orders), t.responsible || '[]', t.name, '', 'Pedidos', t.board_id || null);
       }
@@ -991,9 +1081,25 @@ app.post('/api/tasks',auth,(req,res)=>{
     .run(id, name, status || 'Não iniciado', priority || 'Média', brtDateString(), JSON.stringify(responsible || []), totalOrders || 0, totalCancellations || 0, JSON.stringify(custom || {}), m + 1, board);
   res.json({ success: true });
 });
-app.put('/api/tasks/:id',auth,(req,res)=>{const{name,status,priority,responsible,totalOrders,totalCancellations,custom}=req.body;const t=db.prepare('SELECT * FROM tasks WHERE id=?').get(req.params.id);if(!t)return res.status(404).json({error:'Não encontrada'});
+app.put('/api/tasks/:id',auth,(req,res)=>{
+  const { name, status, priority, responsible, totalOrders, totalCancellations, custom } = req.body;
+  const t = db.prepare('SELECT * FROM tasks WHERE id=?').get(req.params.id);
+  if (!t) return res.status(404).json({ error: 'Não encontrada' });
+  const nextStatus = status ?? t.status;
+  // Horários automáticos entram por cima do custom final (o do corpo, se veio),
+  // nunca por baixo — senão a escrita do cliente apagaria o horário recém-gravado.
+  let nextCustom = custom
+    ? JSON.stringify(preserveAutoTimes({ kind: 'task', stored: t.custom, incoming: custom, boardId: t.board_id }))
+    : t.custom;
+  const withTimes = applyAutoTimes({ kind: 'task', custom: nextCustom, boardId: t.board_id, prevStatus: t.status, nextStatus });
+  if (withTimes) nextCustom = withTimes;
   // Parent deadline is auto-managed by runDailyRollover; client value is ignored.
-  db.prepare('UPDATE tasks SET name=?,status=?,priority=?,responsible=?,total_orders=?,total_cancellations=?,custom=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(name??t.name,status??t.status,priority??t.priority,responsible?JSON.stringify(responsible):t.responsible,totalOrders??t.total_orders,totalCancellations??t.total_cancellations,custom?JSON.stringify(custom):t.custom,req.params.id);res.json({success:true});});
+  db.prepare('UPDATE tasks SET name=?,status=?,priority=?,responsible=?,total_orders=?,total_cancellations=?,custom=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
+    .run(name ?? t.name, nextStatus, priority ?? t.priority, responsible ? JSON.stringify(responsible) : t.responsible, totalOrders ?? t.total_orders, totalCancellations ?? t.total_cancellations, nextCustom, req.params.id);
+  // Devolve o custom para o cliente mostrar o horário na hora, sem esperar o poll.
+  let out = {}; try { out = JSON.parse(nextCustom || '{}'); } catch {}
+  res.json({ success: true, custom: out });
+});
 app.delete('/api/tasks/:id', auth, canManageTasks, (req, res) => {
   const id = req.params.id;
   if (!db.prepare('SELECT id FROM tasks WHERE id=?').get(id)) return res.status(404).json({ error: 'Tarefa não encontrada' });
@@ -1011,7 +1117,22 @@ app.delete('/api/tasks/:id', auth, canManageTasks, (req, res) => {
   res.json({ success: true });
 });
 
-app.put('/api/subitems/:id',auth,(req,res)=>{const{name,owner,status,priority,responsible,total,deadline,custom}=req.body;const s=db.prepare('SELECT * FROM subitems WHERE id=?').get(req.params.id);if(!s)return res.status(404).json({error:'Não encontrado'});db.prepare('UPDATE subitems SET name=?,owner=?,status=?,priority=?,responsible=?,total=?,deadline=?,custom=? WHERE id=?').run(name??s.name,owner??s.owner,status??s.status,priority??s.priority,responsible?JSON.stringify(responsible):s.responsible,total??s.total,deadline!==undefined?deadline:s.deadline,custom?JSON.stringify(custom):s.custom,req.params.id);res.json({success:true});});
+app.put('/api/subitems/:id',auth,(req,res)=>{
+  const { name, owner, status, priority, responsible, total, deadline, custom } = req.body;
+  const s = db.prepare('SELECT * FROM subitems WHERE id=?').get(req.params.id);
+  if (!s) return res.status(404).json({ error: 'Não encontrado' });
+  const nextStatus = status ?? s.status;
+  const boardId = db.prepare('SELECT board_id FROM tasks WHERE id=?').get(s.task_id)?.board_id || null;
+  let nextCustom = custom
+    ? JSON.stringify(preserveAutoTimes({ kind: 'subitem', stored: s.custom, incoming: custom, boardId, taskId: s.task_id }))
+    : s.custom;
+  const withTimes = applyAutoTimes({ kind: 'subitem', custom: nextCustom, boardId, taskId: s.task_id, prevStatus: s.status, nextStatus });
+  if (withTimes) nextCustom = withTimes;
+  db.prepare('UPDATE subitems SET name=?,owner=?,status=?,priority=?,responsible=?,total=?,deadline=?,custom=? WHERE id=?')
+    .run(name ?? s.name, owner ?? s.owner, nextStatus, priority ?? s.priority, responsible ? JSON.stringify(responsible) : s.responsible, total ?? s.total, deadline !== undefined ? deadline : s.deadline, nextCustom, req.params.id);
+  let out = {}; try { out = JSON.parse(nextCustom || '{}'); } catch {}
+  res.json({ success: true, custom: out });
+});
 app.post('/api/subitems',auth,(req,res)=>{const{id,task_id,name,owner,status,priority,responsible,total,deadline,custom}=req.body;const m=db.prepare('SELECT MAX(sort_order) as m FROM subitems WHERE task_id=?').get(task_id);db.prepare('INSERT INTO subitems (id,task_id,name,owner,status,priority,responsible,total,deadline,custom,sort_order) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(id,task_id,name||'Novo subitem',owner||'',status||'Não iniciado',priority||'Média',JSON.stringify(responsible||[]),total||0,deadline||null,JSON.stringify(custom||{}),(m?.m||0)+1);res.json({success:true});});
 
 app.post('/api/updates',auth,(req,res)=>{const{id,targetType,targetId,text,mentions,files}=req.body;db.prepare('INSERT INTO updates (id,target_type,target_id,author,text,mentions,files) VALUES(?,?,?,?,?,?,?)').run(id,targetType,targetId,req.user.name,text||'',JSON.stringify(mentions||[]),JSON.stringify(files||[]));res.json({success:true});});
@@ -1025,19 +1146,25 @@ app.get('/api/columns',auth,(req,res)=>{
   const rows = boardId
     ? db.prepare('SELECT * FROM columns_config WHERE board_id=? ORDER BY sort_order').all(boardId)
     : db.prepare('SELECT * FROM columns_config ORDER BY sort_order').all();
-  res.json(rows.map(c => ({ id: c.id, name: c.name, type: c.type, field: c.field, builtIn: !!c.built_in, isDeadline: !!c.is_deadline, width: c.width, scope: c.scope || 'task', parentColumnId: c.parent_column_id || null, taskId: c.task_id || null, computed: c.computed || null, boardId: c.board_id || 'board_operacoes' })));
+  res.json(rows.map(c => ({ id: c.id, name: c.name, type: c.type, field: c.field, builtIn: !!c.built_in, isDeadline: !!c.is_deadline, width: c.width, scope: c.scope || 'task', parentColumnId: c.parent_column_id || null, taskId: c.task_id || null, computed: c.computed || null, autoTime: c.auto_time || null, boardId: c.board_id || 'board_operacoes' })));
 });
 app.put('/api/columns/reorder',auth,(req,res)=>{const{order}=req.body;if(!Array.isArray(order))return res.status(400).json({error:'order deve ser array'});const upd=db.prepare('UPDATE columns_config SET sort_order=? WHERE id=?');const tx=db.transaction((ids)=>{ids.forEach((id,i)=>upd.run(i,id));});tx(order);res.json({success:true});});
 app.post('/api/columns',auth,(req,res)=>{
-  const { id, name, type, field, isDeadline, width, scope, parentColumnId, taskId, computed, boardId } = req.body;
+  const { id, name, type, field, isDeadline, width, scope, parentColumnId, taskId, computed, autoTime, boardId } = req.body;
   const board = boardId || 'board_operacoes';
   if (!db.prepare('SELECT id FROM boards WHERE id=?').get(board)) return res.status(400).json({ error: 'Quadro inválido' });
   const m = db.prepare('SELECT MAX(sort_order) as m FROM columns_config').get().m || 0;
-  db.prepare('INSERT INTO columns_config (id,name,type,field,built_in,is_deadline,width,sort_order,scope,parent_column_id,task_id,computed,board_id) VALUES(?,?,?,?,0,?,?,?,?,?,?,?,?)')
-    .run(id, name, type, field, isDeadline ? 1 : 0, width || '80px', m + 1, scope || 'task', parentColumnId || null, taskId || null, computed || null, board);
+  // auto_time só faz sentido em coluna de horário.
+  const at = type === 'time' && ['start', 'end'].includes(autoTime) ? autoTime : null;
+  db.prepare('INSERT INTO columns_config (id,name,type,field,built_in,is_deadline,width,sort_order,scope,parent_column_id,task_id,computed,auto_time,board_id) VALUES(?,?,?,?,0,?,?,?,?,?,?,?,?,?)')
+    .run(id, name, type, field, isDeadline ? 1 : 0, width || '80px', m + 1, scope || 'task', parentColumnId || null, taskId || null, computed || null, at, board);
   res.json({ success: true });
 });
-app.put('/api/columns/:id',auth,(req,res)=>{const{name,isDeadline,width,type,parentColumnId}=req.body;if(name)db.prepare('UPDATE columns_config SET name=? WHERE id=?').run(name,req.params.id);if(isDeadline!==undefined)db.prepare('UPDATE columns_config SET is_deadline=? WHERE id=?').run(isDeadline?1:0,req.params.id);if(width)db.prepare('UPDATE columns_config SET width=? WHERE id=?').run(width,req.params.id);if(type)db.prepare('UPDATE columns_config SET type=? WHERE id=?').run(type,req.params.id);if(parentColumnId!==undefined)db.prepare('UPDATE columns_config SET parent_column_id=? WHERE id=?').run(parentColumnId||null,req.params.id);res.json({success:true});});
+app.put('/api/columns/:id',auth,(req,res)=>{const{name,isDeadline,width,type,parentColumnId,autoTime}=req.body;if(name)db.prepare('UPDATE columns_config SET name=? WHERE id=?').run(name,req.params.id);if(isDeadline!==undefined)db.prepare('UPDATE columns_config SET is_deadline=? WHERE id=?').run(isDeadline?1:0,req.params.id);if(width)db.prepare('UPDATE columns_config SET width=? WHERE id=?').run(width,req.params.id);
+  // Trocar o tipo para algo que não seja horário desliga o automático junto.
+  if(type){db.prepare('UPDATE columns_config SET type=? WHERE id=?').run(type,req.params.id);if(type!=='time')db.prepare('UPDATE columns_config SET auto_time=NULL WHERE id=?').run(req.params.id);}
+  if(autoTime!==undefined){const at=['start','end'].includes(autoTime)?autoTime:null;db.prepare("UPDATE columns_config SET auto_time=? WHERE id=? AND type='time'").run(at,req.params.id);}
+  if(parentColumnId!==undefined)db.prepare('UPDATE columns_config SET parent_column_id=? WHERE id=?').run(parentColumnId||null,req.params.id);res.json({success:true});});
 app.delete('/api/columns/:id',auth,adminOnly,(req,res)=>{
   const colId=req.params.id;
   const c=db.prepare('SELECT built_in FROM columns_config WHERE id=?').get(colId);
