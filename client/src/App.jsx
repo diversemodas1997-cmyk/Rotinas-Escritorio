@@ -88,6 +88,16 @@ const sortTaskTree = (tasks) => sortByPriority(tasks).map(t => ({ ...t, subitems
 // Colunas de status que um horário automático pode observar. A coluna Status
 // nativa é referenciada como `null` — o valor dela mora no campo `status` da
 // linha, não no custom — e as criadas pelo usuário, pela própria id.
+// Espelho de NATIVE_COLUMNS do servidor: usado só para listar o que falta no
+// quadro na hora de restaurar.
+const NATIVE_COLUMN_CATALOG = [
+  { field: "responsible", name: "Responsável" },
+  { field: "status", name: "Status" },
+  { field: "priority", name: "Prioridade" },
+  { field: "deadline", name: "Prazo" },
+  { field: "totalOrders", name: "Pedidos" },
+  { field: "totalCancellations", name: "Canc." },
+];
 const statusSourceList = (cols) => (cols || [])
   .filter(c => c.type === "status")
   .map(c => ({ id: c.id, name: c.name, sourceId: (c.builtIn && c.field === "status") ? null : c.id }));
@@ -1169,10 +1179,12 @@ function ColHeader({ col, onRename, onDelete, onToggleDeadline, onChangeType, on
 }
 
 // ─── ADD COLUMN MODAL ────────────────────────────────────────────────────────
-function AddColumnModal({ onClose, onAdd, columns, title: modalTitle, linkParent }) {
+function AddColumnModal({ onClose, onAdd, columns, title: modalTitle, linkParent, onRestoreNative }) {
   const [name, setName] = useState(""); const [type, setType] = useState("text"); const [isDeadline, setIsDeadline] = useState(false); const [copyFrom, setCopyFrom] = useState(""); const [parentFor, setParentFor] = useState(""); const [autoTime, setAutoTime] = useState(null); const [autoTimeSource, setAutoTimeSource] = useState(null);
   const types = [{ value: "text", label: "Texto", icon: "📝" }, { value: "number", label: "Número", icon: "🔢" }, { value: "date", label: "Data", icon: "📅" }, { value: "time", label: "Horário", icon: "🕐" }, { value: "status", label: "Status", icon: "🔵" }, { value: "people", label: "Pessoas", icon: "👥" }, { value: "priority", label: "Prioridade", icon: "🔴" }];
   const numericParents = linkParent ? columns.filter(c => c.type === "number") : [];
+  const presentNative = new Set((columns || []).filter(c => c.builtIn).map(c => c.field));
+  const missingNatives = NATIVE_COLUMN_CATALOG.filter(n => !presentNative.has(n.field));
   const statusSources = statusSourceList(columns);
   const sourceLabel = (statusSources.find(sc => (sc.sourceId || null) === (autoTimeSource || null)) || {}).name || "Status";
   const handleAdd = () => { if (!name.trim()) return; const id = "col_" + Date.now(); const col = { id, name: name.trim(), type, field: id, builtIn: false, isDeadline: type === "date" && isDeadline, autoTime: type === "time" ? autoTime : null, autoTimeSource: type === "time" && autoTime ? autoTimeSource : null, width: type === "people" ? "110px" : type === "status" || type === "priority" ? "110px" : type === "date" ? "100px" : type === "time" ? "90px" : "80px" }; if (linkParent && type === "number" && parentFor) col.parentColumnId = parentFor; onAdd(col); onClose(); };
@@ -1188,6 +1200,25 @@ function AddColumnModal({ onClose, onAdd, columns, title: modalTitle, linkParent
             <button onClick={handleCopy} disabled={!copyFrom} style={{ background: copyFrom ? "#579bfc" : "#333", color: "#fff", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 12, fontWeight: 600, cursor: copyFrom ? "pointer" : "default" }}>Duplicar</button>
           </div>
         </div>
+        {/* Colunas nativas podem ser excluídas pelo admin; é aqui que elas voltam.
+            Criar uma coluna nova não serve: ela ganha campo próprio e não reaponta
+            para o campo nativo, então o valor antigo continuaria escondido. */}
+        {!linkParent && onRestoreNative && missingNatives.length > 0 && (
+          <div style={{ background: "#1a1d23", borderRadius: 10, padding: 14, marginBottom: 16, border: "1px solid #333" }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "#a5b1c2", marginBottom: 2 }}>↺ Restaurar coluna nativa</div>
+            <div style={{ fontSize: 11, color: "#778ca3", marginBottom: 8 }}>Excluídas deste quadro. Os valores nunca foram apagados.</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {missingNatives.map(n => (
+                <span key={n.field} onClick={() => { onRestoreNative(n.field); onClose(); }}
+                  style={{ cursor: "pointer", background: "#23262e", padding: "5px 10px", borderRadius: 12, border: "1px solid #3a3d45", color: "#e8eaed", fontSize: 11, fontWeight: 600 }}
+                  onMouseEnter={e => e.currentTarget.style.background = "#2f3340"}
+                  onMouseLeave={e => e.currentTarget.style.background = "#23262e"}>
+                  ↺ {n.name}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
         <div style={{ fontSize: 12, color: "#556", textAlign: "center", marginBottom: 12 }}>— ou criar nova —</div>
         <div style={{ marginBottom: 12 }}><label style={{ fontSize: 12, color: "#778ca3", fontWeight: 600, display: "block", marginBottom: 4 }}>Nome</label><input value={name} onChange={e => setName(e.target.value)} placeholder="Ex: Observações" style={{ width: "100%", padding: "9px 11px", borderRadius: 8, border: "1px solid #444", background: "#1a1d23", color: "#e8eaed", fontSize: 13, outline: "none", boxSizing: "border-box" }} autoFocus /></div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, marginBottom: 12 }}>
@@ -1455,13 +1486,16 @@ function BoardView({ tasks, setTasks, apiUpdateTask, apiUpdateSub, apiAddTask, a
                 style={{ ...hdrStyle(), cursor: "grab", opacity: colDrag.dragging === ci ? 0.4 : 1, transition: "opacity .15s" }}>
                 <ColHeader col={col}
                   onRename={v => { setColumns(p => p.map(c => c.id === col.id ? { ...c, name: v } : c)); if (apiUpdateColumn) apiUpdateColumn(col.id, { name: v }); }}
-                  onDelete={!col.builtIn && perms.deleteColumns ? () => { if (apiDeleteColumn) apiDeleteColumn(col.id); else setColumns(p => p.filter(c => c.id !== col.id)); } : null}
+                  onDelete={perms.deleteColumns ? () => {
+                    if (col.builtIn && !window.confirm(`"${col.name}" e uma coluna nativa do quadro. Excluir tira ela da tela, mas os valores continuam guardados e a coluna pode ser trazida de volta pelo botao "+" (Restaurar coluna nativa). Excluir?`)) return;
+                    if (apiDeleteColumn) apiDeleteColumn(col.id); else setColumns(p => p.filter(c => c.id !== col.id));
+                  } : null}
                   onToggleDeadline={() => { const nv = !col.isDeadline; setColumns(p => p.map(c => c.id === col.id ? { ...c, isDeadline: nv } : c)); if (apiUpdateColumn) apiUpdateColumn(col.id, { isDeadline: nv }); }}
                   onSetAutoTime={apiUpdateColumn ? (v, src) => { setColumns(p => p.map(c => c.id === col.id ? { ...c, autoTime: v, autoTimeSource: src } : c)); apiUpdateColumn(col.id, { autoTime: v, autoTimeSource: src }); } : null}
                   statusColumns={statusSourceList(columns)}
                   onChangeType={(newType) => { setColumns(p => p.map(c => c.id === col.id ? { ...c, type: newType, isDeadline: newType === "date" ? c.isDeadline : false, autoTime: newType === "time" ? c.autoTime : null } : c)); if (apiUpdateColumn) apiUpdateColumn(col.id, { type: newType }); }}
                   onDuplicate={() => { const newId = "col_" + Date.now(); const dup = { ...col, id: newId, field: newId, name: col.name + " (cópia)", builtIn: false }; setColumns(p => [...p, dup]); if (apiUpdateColumn) apiCall("/columns", { method: "POST", body: JSON.stringify(dup) }); }}
-                  canDelete={col.builtIn ? true : perms.deleteColumns}
+                  canDelete={perms.deleteColumns}
                 />
                 <ResizeHandle onResize={(w) => { setColumns(prev => prev.map(c => c.id === col.id ? { ...c, width: w + "px" } : c)); if (apiUpdateColumn) apiUpdateColumn(col.id, { width: w + "px" }); }} />
               </div>
@@ -1620,14 +1654,14 @@ function SubitemsBlock({ highlights = {}, onClearHighlight = () => {}, task, all
           <div key={col.id} style={{ ...hdrStyle({ height: 34, fontSize: 10, background: "#191b20" }) }}>
             <ColHeader col={col}
               onRename={null}
-              onDelete={!col.builtIn && perms.deleteColumns ? () => { if (window.confirm(`Excluir a coluna "${col.name}" de TODAS as tarefas? Essa ação nao pode ser desfeita.`)) { if (apiDeleteColumn) apiDeleteColumn(col.id); else setColumns(p => p.filter(c => c.id !== col.id)); } } : null}
+              onDelete={perms.deleteColumns ? () => { if (window.confirm(col.builtIn ? `"${col.name}" e uma coluna nativa do quadro. Excluir tira ela da tela, mas os valores continuam guardados e ela pode voltar pelo botao "+" (Restaurar coluna nativa). Excluir?` : `Excluir a coluna "${col.name}" de TODAS as tarefas? Essa acao nao pode ser desfeita.`)) { if (apiDeleteColumn) apiDeleteColumn(col.id); else setColumns(p => p.filter(c => c.id !== col.id)); } } : null}
               onToggleDeadline={() => { const nv = !col.isDeadline; setColumns(p => p.map(c => c.id === col.id ? { ...c, isDeadline: nv } : c)); if (apiUpdateColumn) apiUpdateColumn(col.id, { isDeadline: nv }); }}
               onSetAutoTime={apiUpdateColumn ? (v, src) => { setColumns(p => p.map(c => c.id === col.id ? { ...c, autoTime: v, autoTimeSource: src } : c)); apiUpdateColumn(col.id, { autoTime: v, autoTimeSource: src }); } : null}
               statusColumns={statusSourceList(allCols)}
               onChangeType={(newType) => { setColumns(p => p.map(c => c.id === col.id ? { ...c, type: newType, isDeadline: newType === "date" ? c.isDeadline : false, autoTime: newType === "time" ? c.autoTime : null } : c)); if (apiUpdateColumn) apiUpdateColumn(col.id, { type: newType }); }}
               onDuplicate={() => { const newId = "col_" + Date.now(); const dup = { ...col, id: newId, field: newId, name: col.name + " (cópia)", builtIn: false, scope: 'subitem', taskId: task.id, parentColumnId: col.id }; setSubColumns(p => [...p, dup]); apiCall("/columns", { method: "POST", body: JSON.stringify(dup) }); }}
               onHide={HIDEABLE_NATIVE.includes(col.id) && perms.addColumns ? () => hideInTask(col.id) : null}
-              canDelete={col.builtIn ? true : perms.deleteColumns}
+              canDelete={perms.deleteColumns}
             />
             <ResizeHandle onResize={(w) => resizeC(col.id, w, setColumns)} />
           </div>
@@ -4686,6 +4720,12 @@ function Dashboard({ currentUser, onLogout }) {
     }
   };
 
+  const apiRestoreNativeColumn = async (field) => {
+    const res = await apiCall("/columns/restore-native", { method: "POST", returnError: true, body: JSON.stringify({ boardId: currentBoardId, field }) });
+    if (res?.error) { alert(`Não foi possível restaurar a coluna: ${res.error}`); return; }
+    if (res?.column) setColumns(prev => [...prev, res.column]);
+  };
+
   const apiReorderColumns = (orderedIds) => {
     apiCall("/columns/reorder", { method: "PUT", body: JSON.stringify({ order: orderedIds }) });
   };
@@ -5182,7 +5222,7 @@ function Dashboard({ currentUser, onLogout }) {
         />
       )}
       {showAddTask && <AddTaskModal onClose={() => setShowAddTask(false)} onAdd={apiAddTask} allPeople={allPeople} />}
-      {showAddCol && perms.addColumns && <AddColumnModal onClose={() => setShowAddCol(false)} onAdd={apiAddColumn} columns={columns} />}
+      {showAddCol && perms.addColumns && <AddColumnModal onClose={() => setShowAddCol(false)} onAdd={apiAddColumn} columns={columns} onRestoreNative={isAdmin ? apiRestoreNativeColumn : null} />}
       {showAddSubCol && perms.addColumns && <AddColumnModal onClose={() => setShowAddSubCol(false)} onAdd={apiAddSubColumn} columns={columns} title="Adicionar Coluna de Subitem" linkParent />}
       {updatesData && <UpdatesPanel itemName={updatesData.name} updates={updatesData.updates} currentUserName={currentUser.name} onAddUpdate={apiAddUpdate} onDeleteUpdate={apiDeleteUpdate} onEditUpdate={(updateId, newText, newFiles) => {
         if (!updatesTarget) return;

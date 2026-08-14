@@ -1244,10 +1244,38 @@ app.put('/api/columns/:id',auth,(req,res)=>{const{name,isDeadline,width,type,par
   if(autoTime!==undefined){const at=['start','end'].includes(autoTime)?autoTime:null;db.prepare("UPDATE columns_config SET auto_time=?, auto_time_source=? WHERE id=? AND type='time'").run(at,at?(autoTimeSource||null):null,req.params.id);}
   else if(autoTimeSource!==undefined)db.prepare("UPDATE columns_config SET auto_time_source=? WHERE id=? AND type='time'").run(autoTimeSource||null,req.params.id);
   if(parentColumnId!==undefined)db.prepare('UPDATE columns_config SET parent_column_id=? WHERE id=?').run(parentColumnId||null,req.params.id);res.json({success:true});});
+// Colunas nativas do quadro. O admin pode excluí-las — elas atrapalham quando o
+// quadro usa colunas de status próprias, por exemplo —, e por isso precisam ter
+// volta: criar coluna nova gera um campo próprio, nunca reaponta para o nativo,
+// então sem restauração apagar "Status" esconderia o campo para sempre.
+const NATIVE_COLUMNS = [
+  { field: 'responsible',        name: 'Responsável', type: 'people',   isDeadline: 0, width: '110px' },
+  { field: 'status',             name: 'Status',      type: 'status',   isDeadline: 0, width: '120px' },
+  { field: 'priority',           name: 'Prioridade',  type: 'priority', isDeadline: 0, width: '110px' },
+  { field: 'deadline',           name: 'Prazo',       type: 'date',     isDeadline: 1, width: '100px' },
+  { field: 'totalOrders',        name: 'Pedidos',     type: 'number',   isDeadline: 0, width: '80px'  },
+  { field: 'totalCancellations', name: 'Canc.',       type: 'number',   isDeadline: 0, width: '80px'  },
+];
+
+app.post('/api/columns/restore-native', auth, adminOnly, (req, res) => {
+  const { boardId, field } = req.body || {};
+  const board = boardId || 'board_operacoes';
+  if (!db.prepare('SELECT id FROM boards WHERE id=?').get(board)) return res.status(400).json({ error: 'Quadro inválido' });
+  const def = NATIVE_COLUMNS.find(c => c.field === field);
+  if (!def) return res.status(400).json({ error: 'Coluna nativa desconhecida' });
+  if (db.prepare("SELECT id FROM columns_config WHERE board_id=? AND built_in=1 AND field=? AND scope='task'").get(board, field)) {
+    return res.status(409).json({ error: 'Esta coluna já existe no quadro' });
+  }
+  const id = `col_${field}__${board}`;
+  const m = db.prepare('SELECT MAX(sort_order) as m FROM columns_config').get().m || 0;
+  db.prepare(`INSERT INTO columns_config (id,name,type,field,built_in,is_deadline,width,sort_order,scope,board_id)
+              VALUES (?,?,?,?,1,?,?,?,'task',?)`)
+    .run(id, def.name, def.type, def.field, def.isDeadline, def.width, m + 1, board);
+  res.json({ success: true, column: { id, name: def.name, type: def.type, field: def.field, builtIn: true, isDeadline: !!def.isDeadline, width: def.width, scope: 'task', parentColumnId: null, taskId: null, computed: null, autoTime: null, autoTimeSource: null, boardId: board } });
+});
+
 app.delete('/api/columns/:id',auth,adminOnly,(req,res)=>{
   const colId=req.params.id;
-  const c=db.prepare('SELECT built_in FROM columns_config WHERE id=?').get(colId);
-  if(c?.built_in)return res.status(400).json({error:'Não pode excluir nativa'});
   const tx=db.transaction(()=>{
     db.prepare('DELETE FROM columns_config WHERE id=?').run(colId);
     // Horários que observavam esta coluna de status ficam sem origem. Desligar o
