@@ -79,6 +79,27 @@ const STATUS_RANK = STATUSES.reduce((acc, s, i) => ({ ...acc, [s]: i }), {});
 const statusRank = (s) => (STATUS_RANK[s] !== undefined ? STATUS_RANK[s] : 0);
 const sortByPriority = (list) => [...list].sort((a, b) =>
   priorityRank(a.priority) - priorityRank(b.priority) || statusRank(a.status) - statusRank(b.status));
+// Essa ordenação só roda ao abrir/trocar de quadro. Enquanto o quadro está
+// aberto a ordem fica congelada: trocar o status de uma linha não pode fazer
+// ela pular debaixo do cursor (o clique seguinte cairia em outra tarefa) nem
+// embaralhar a tela de quem estiver vendo o mesmo quadro.
+const sortTaskTree = (tasks) => sortByPriority(tasks).map(t => ({ ...t, subitems: sortByPriority(t.subitems || []) }));
+// Reordena `incoming` para acompanhar a ordem que já está na tela (`onScreen`).
+// O que não estava na tela — criado por outro usuário desde o último ciclo —
+// entra no fim, na ordem em que o servidor mandou.
+const keepOrder = (incoming, onScreen) => {
+  const rank = new Map(onScreen.map((item, i) => [item.id, i]));
+  return incoming
+    .map((item, i) => ({ item, r: rank.has(item.id) ? rank.get(item.id) : onScreen.length + i }))
+    .sort((a, b) => a.r - b.r)
+    .map(x => x.item);
+};
+const keepTaskTreeOrder = (incoming, onScreen) => {
+  const subsById = new Map(onScreen.map(t => [t.id, t.subitems || []]));
+  return keepOrder(incoming, onScreen).map(t => ({
+    ...t, subitems: keepOrder(t.subitems || [], subsById.get(t.id) || []),
+  }));
+};
 const PEOPLE_COLORS = { Gabriela: "#ff642e", Camila: "#fdab3d", Junior: "#a25ddc", Ana: "#00c875", Pedro: "#579bfc", Lucas: "#e2445c" };
 
 // Nome de usuário: mesma regra do servidor (3 a 20, letras/números/. _ -).
@@ -1202,12 +1223,14 @@ function BoardView({ tasks, setTasks, apiUpdateTask, apiUpdateSub, apiAddTask, a
     });
   }, [highlights, tasks]);
 
-  // O quadro está SEMPRE ordenado por prioridade — não depende de alguém ter
-  // mexido em alguma tarefa. Sort estável, então a ordem manual (arrastar)
-  // continua valendo entre tarefas de mesma prioridade.
+  // A ordem já vem pronta do estado: é definida ao abrir o quadro e reaplicada
+  // sozinha quando o usuário para de mexer (ver reordenação ociosa no
+  // Dashboard). Aqui só filtramos pela busca — reordenar a cada render faria a
+  // linha fugir debaixo do cursor no instante do clique.
   const filtered = useMemo(() => {
-    const base = !search ? tasks : (() => { const q = search.toLowerCase(); return tasks.filter(t => t.name.toLowerCase().includes(q) || (t.responsible || []).some(r => r.toLowerCase().includes(q)) || t.subitems.some(s => s.name.toLowerCase().includes(q))); })();
-    return sortByPriority(base);
+    if (!search) return tasks;
+    const q = search.toLowerCase();
+    return tasks.filter(t => t.name.toLowerCase().includes(q) || (t.responsible || []).some(r => r.toLowerCase().includes(q)) || t.subitems.some(s => s.name.toLowerCase().includes(q)));
   }, [tasks, search]);
   const upTask = (tid, nt) => { if (apiUpdateTask) apiUpdateTask(tid, nt); else setTasks(prev => prev.map(t => t.id === tid ? (typeof nt === "function" ? nt(t) : nt) : t)); };
   const upSub = (tid, sid, ns) => { if (apiUpdateSub) apiUpdateSub(tid, sid, ns); else setTasks(prev => prev.map(t => t.id === tid ? { ...t, subitems: t.subitems.map(s => s.id === sid ? (typeof ns === "function" ? ns(s) : ns) : s) } : t)); };
@@ -1391,10 +1414,9 @@ function BoardView({ tasks, setTasks, apiUpdateTask, apiUpdateSub, apiAddTask, a
 
 // Extracted subitems block to use its own drag hook
 function SubitemsBlock({ highlights = {}, onClearHighlight = () => {}, task, allCols, subColumns, setSubColumns, apiUpdateSubColumn, apiDeleteSubColumn, apiReorderSubColumns, setColumns, apiUpdateColumn, apiDeleteColumn, taskColWidth, cellBorder, hdrStyle, cellStyle, upTask, upSub, onOpenUpdates, allPeople, perms, setShowAddSubCol, setActiveSubColTaskId, subReorder, apiAddSubitem }) {
-  // Mesma regra das tarefas: o bloco sai sempre por prioridade, independente
-  // de alguém ter mexido em algo. Sort estável preserva a ordem manual dentro
-  // de cada faixa de prioridade.
-  const subitems = useMemo(() => sortByPriority(task.subitems || []), [task.subitems]);
+  // Mesma regra das tarefas: a ordem já vem congelada do estado, reaplicada
+  // pela reordenação ociosa do Dashboard — nunca no instante do clique.
+  const subitems = task.subitems || [];
   const subDrag = useDragReorder(subitems, subReorder);
   const resizeC = (colId, newW, setter) => setter(prev => prev.map(c => c.id === colId ? { ...c, width: newW + "px" } : c));
   const taskSubColumns = subColumns.filter(sc => sc.taskId === task.id);
@@ -3838,7 +3860,8 @@ function Dashboard({ currentUser, onLogout }) {
         apiCall(`/columns?boardId=${encodeURIComponent(initialBoardId)}`),
       ]);
       if (!mounted) return;
-      if (tasksData) setTasks(normalizeTasks(tasksData));
+      // Ordena ao abrir o quadro; daí em diante a ordem fica congelada.
+      if (tasksData) setTasks(sortTaskTree(normalizeTasks(tasksData)));
       else setTasks([]);
       if (colsData) {
         setColumns(colsData.filter(c => (c.scope || 'task') === 'task'));
@@ -3864,7 +3887,7 @@ function Dashboard({ currentUser, onLogout }) {
       apiCall(`/tasks?boardId=${encodeURIComponent(boardId)}`),
       apiCall(`/columns?boardId=${encodeURIComponent(boardId)}`),
     ]);
-    if (tasksData) setTasks(normalizeTasks(tasksData)); else setTasks([]);
+    if (tasksData) setTasks(sortTaskTree(normalizeTasks(tasksData))); else setTasks([]);
     if (colsData) {
       setColumns(colsData.filter(c => (c.scope || 'task') === 'task'));
       setSubColumns(colsData.filter(c => c.scope === 'subitem'));
@@ -3903,7 +3926,10 @@ function Dashboard({ currentUser, onLogout }) {
       if (cancelled || !data) return;
       if (isUserEditing() || hasInFlightMutations()) return;
       pollAppliedRef.current = true;
-      setTasks(normalizeTasks(data));
+      // O poll adota a ordem que já está na tela em vez de impor a do servidor:
+      // assim a alteração de status de um colega não embaralha o quadro de quem
+      // está trabalhando. A reorganização chega pela reordenação ociosa.
+      setTasks(prev => keepTaskTreeOrder(normalizeTasks(data), prev));
     };
     const id = setInterval(tick, POLL_MS);
     // Ao voltar para a aba, sincroniza na hora em vez de esperar o próximo tick.
@@ -3948,6 +3974,57 @@ function Dashboard({ currentUser, onLogout }) {
     };
     const id = setInterval(tick, POLL_MS);
     return () => { cancelled = true; clearInterval(id); };
+    // eslint-disable-next-line
+  }, [dataLoaded, currentBoardId]);
+
+  // ─── REORDENAÇÃO AUTOMÁTICA (ociosa) ──────────────────────────────────────
+  // A ordem por prioridade/status não é reaplicada no clique: isso fazia a linha
+  // fugir debaixo do cursor e o clique seguinte cair em outra tarefa. Em vez
+  // disso ela se reaplica sozinha assim que o usuário para de mexer — sem F5 —
+  // e a nova ordem é gravada no banco, valendo para todos os usuários.
+  const IDLE_REORDER_MS = 8000;
+  const lastActivityRef = useRef(Date.now());
+  useEffect(() => {
+    const bump = () => { lastActivityRef.current = Date.now(); };
+    window.addEventListener("pointerdown", bump);
+    window.addEventListener("keydown", bump);
+    window.addEventListener("wheel", bump, { passive: true });
+    return () => {
+      window.removeEventListener("pointerdown", bump);
+      window.removeEventListener("keydown", bump);
+      window.removeEventListener("wheel", bump);
+    };
+  }, []);
+  // Espelho do estado: o intervalo lê a lista atual sem precisar de `tasks` nas
+  // deps (o que recriaria o timer a cada tecla digitada).
+  const tasksRef = useRef(tasks);
+  useEffect(() => { tasksRef.current = tasks; }, [tasks]);
+  useEffect(() => {
+    if (!dataLoaded || !currentBoardId) return;
+    const idList = (arr) => (arr || []).map(x => x.id);
+    const sameList = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+    const tick = () => {
+      if (document.hidden) return;
+      if (Date.now() - lastActivityRef.current < IDLE_REORDER_MS) return;
+      if (hasInFlightMutations()) return;
+      const ae = document.activeElement;
+      if (ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.isContentEditable)) return;
+
+      const prev = tasksRef.current;
+      if (prev.length === 0) return;
+      const next = sortTaskTree(prev);
+      const prevSubs = new Map(prev.map(t => [t.id, idList(t.subitems)]));
+      const tasksMoved = !sameList(idList(prev), idList(next));
+      const subsMoved = next.filter(t => !sameList(prevSubs.get(t.id) || [], idList(t.subitems)));
+      // Nada fora do lugar → não mexe. Sem isso a tela daria saltos gratuitos.
+      if (!tasksMoved && subsMoved.length === 0) return;
+
+      setTasks(next);
+      if (tasksMoved) apiReorderTasks(idList(next));
+      subsMoved.forEach(t => apiReorderSubitems(t.id, idList(t.subitems)));
+    };
+    const id = setInterval(tick, 2000);
+    return () => clearInterval(id);
     // eslint-disable-next-line
   }, [dataLoaded, currentBoardId]);
 
@@ -4207,40 +4284,24 @@ function Dashboard({ currentUser, onLogout }) {
   const apiUpdateTask = (tid, newTask) => {
     const current = tasks.find(t => t.id === tid);
     const updated = typeof newTask === "function" ? newTask(current || {}) : newTask;
-    // Prioridade ou status alterados → o quadro se reorganiza sozinho: críticas
-    // no topo e, dentro de cada prioridade, na ordem de execução. A ordem manual
-    // entre iguais é preservada (sort estável) e a nova ordem vai para o banco.
-    const priorityChanged = !!current && updated &&
-      (current.priority !== updated.priority || current.status !== updated.status);
-    setTasks(prev => {
-      const next = prev.map(t => t.id === tid ? (typeof newTask === "function" ? newTask(t) : newTask) : t);
-      return priorityChanged ? sortByPriority(next) : next;
-    });
+    // A linha NÃO se move aqui. Reordenar no instante do clique fazia a tarefa
+    // fugir debaixo do cursor e o clique seguinte cair em outra tarefa — era a
+    // causa de "mudei um status e o de outras mudou junto". Quem reorganiza é a
+    // reordenação ociosa, quando o usuário para de mexer.
+    setTasks(prev => prev.map(t => t.id === tid ? (typeof newTask === "function" ? newTask(t) : newTask) : t));
     apiCall(`/tasks/${tid}`, { method: "PUT", body: JSON.stringify(updated) });
-    if (priorityChanged) {
-      const ordered = sortByPriority(tasks.map(t => t.id === tid ? updated : t));
-      apiReorderTasks(ordered.map(t => t.id));
-    }
   };
 
   const apiUpdateSub = (tid, sid, newSub) => {
     const parent = tasks.find(t => t.id === tid);
     const current = (parent?.subitems || []).find(s => s.id === sid);
     const subToSave = typeof newSub === "function" ? (current ? newSub(current) : {}) : newSub;
-    // Mesma regra das tarefas: mudou a prioridade ou o status, o bloco de
-    // subitens se reordena e a nova ordem vale para todos os usuários.
-    const priorityChanged = !!current && subToSave &&
-      (current.priority !== subToSave.priority || current.status !== subToSave.status);
+    // Mesma regra das tarefas: o subitem não muda de lugar no clique.
     setTasks(prev => prev.map(t => {
       if (t.id !== tid) return t;
-      const subs = t.subitems.map(s => s.id === sid ? (typeof newSub === "function" ? newSub(s) : newSub) : s);
-      return { ...t, subitems: priorityChanged ? sortByPriority(subs) : subs };
+      return { ...t, subitems: t.subitems.map(s => s.id === sid ? (typeof newSub === "function" ? newSub(s) : newSub) : s) };
     }));
     apiCall(`/subitems/${sid}`, { method: "PUT", body: JSON.stringify(subToSave) });
-    if (priorityChanged) {
-      const ordered = sortByPriority((parent.subitems || []).map(s => s.id === sid ? subToSave : s));
-      apiReorderSubitems(tid, ordered.map(s => s.id));
-    }
   };
 
   const apiAddTask = (task) => {
@@ -4255,7 +4316,7 @@ function Dashboard({ currentUser, onLogout }) {
     if (res?.error) {
       // Rollback on failure: refetch board tasks so the user doesn't see a phantom delete.
       const fresh = await apiCall(`/tasks?boardId=${encodeURIComponent(currentBoardId)}`);
-      if (fresh) setTasks(normalizeTasks(fresh));
+      if (fresh) setTasks(prev => keepTaskTreeOrder(normalizeTasks(fresh), prev));
       return { error: res.error };
     }
     return { success: true };
@@ -4404,7 +4465,7 @@ function Dashboard({ currentUser, onLogout }) {
     ]);
     if (usersData) setUsers(usersData.map(u => ({ ...u, password: "******" })));
     else setUsers(prev => prev.filter(u => u.id !== userId));
-    if (tasksData) setTasks(normalizeTasks(tasksData));
+    if (tasksData) setTasks(prev => keepTaskTreeOrder(normalizeTasks(tasksData), prev));
     return { success: true };
   };
 
@@ -4722,7 +4783,7 @@ function Dashboard({ currentUser, onLogout }) {
               if (changed) apiUpdateAutomation(changed.id, changed.active);
             }} canManageAutomations={perms.manageAutomations} onDataChanged={async () => {
               const [tasksData, autoData] = await Promise.all([apiCall(`/tasks?boardId=${encodeURIComponent(currentBoardId)}`), apiCall("/automations")]);
-              if (tasksData) setTasks(normalizeTasks(tasksData));
+              if (tasksData) setTasks(prev => keepTaskTreeOrder(normalizeTasks(tasksData), prev));
               if (autoData) setAutomations(autoData);
             }} />
           </div>
