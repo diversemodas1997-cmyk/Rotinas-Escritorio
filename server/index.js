@@ -421,10 +421,13 @@ function autoTimeColumns(kind, boardId, taskId) {
 
 // Onde mora o valor de uma coluna de status: a nativa do quadro fica no campo
 // `status` da linha; as criadas pelo usuário ficam no custom, pela id delas.
-function statusSourceIsNative(srcId) {
-  if (!srcId) return true;
+// 'missing' = a coluna de origem foi excluída; nesse caso o horário nao dispara
+// mais nada, em vez de silenciosamente passar a obedecer o status nativo.
+function resolveStatusSource(srcId) {
+  if (!srcId) return 'native';
   const c = db.prepare('SELECT built_in, field FROM columns_config WHERE id=?').get(srcId);
-  return !c || (!!c.built_in && c.field === 'status');
+  if (!c) return 'missing';
+  return (!!c.built_in && c.field === 'status') ? 'native' : 'custom';
 }
 
 // O cliente reenvia o custom inteiro a cada edição. Se ele ainda não recebeu o
@@ -457,18 +460,19 @@ function applyAutoTimes({ kind, boardId, taskId, prevStatus, nextStatus, prevCus
   try { nextObj = JSON.parse(nextCustom || '{}'); } catch { nextObj = {}; }
   // Cada horário observa a SUA coluna de status — um quadro pode ter várias e
   // elas não podem disputar o mesmo relógio.
-  const nativeCache = new Map();
-  const isNative = (src) => {
-    if (!nativeCache.has(src)) nativeCache.set(src, statusSourceIsNative(src));
-    return nativeCache.get(src);
+  const kindCache = new Map();
+  const srcKind = (src) => {
+    if (!kindCache.has(src)) kindCache.set(src, resolveStatusSource(src));
+    return kindCache.get(src);
   };
-  const before = (src) => (isNative(src) ? prevStatus : prevObj[src]);
-  const after = (src) => (isNative(src) ? nextStatus : nextObj[src]);
+  const before = (src) => (srcKind(src) === 'native' ? prevStatus : prevObj[src]);
+  const after = (src) => (srcKind(src) === 'native' ? nextStatus : nextObj[src]);
 
   const now = brtTimeString();
   let changed = false;
   for (const c of cols) {
     const src = c.auto_time_source || null;
+    if (srcKind(src) === 'missing') continue;       // origem excluída: nao dispara
     const to = after(src);
     if (to === before(src)) continue;               // sem transição nessa origem
     if (AUTO_TIME_TRIGGER[to] !== c.auto_time) continue;
@@ -1197,6 +1201,10 @@ app.delete('/api/columns/:id',auth,adminOnly,(req,res)=>{
   if(c?.built_in)return res.status(400).json({error:'Não pode excluir nativa'});
   const tx=db.transaction(()=>{
     db.prepare('DELETE FROM columns_config WHERE id=?').run(colId);
+    // Horários que observavam esta coluna de status ficam sem origem. Desligar o
+    // automático e avisar pelo silêncio da coluna é melhor que deixá-los cair no
+    // status nativo sem ninguém perceber.
+    db.prepare('UPDATE columns_config SET auto_time=NULL, auto_time_source=NULL WHERE auto_time_source=?').run(colId);
     const updTask=db.prepare('UPDATE tasks SET custom=? WHERE id=?');
     for(const t of db.prepare('SELECT id, custom FROM tasks').all()){
       try{

@@ -4598,9 +4598,17 @@ function Dashboard({ currentUser, onLogout }) {
     apiCall(`/columns/${colId}`, { method: "PUT", body: JSON.stringify(patch) });
   };
 
-  const apiDeleteColumn = (colId) => {
+  // A exclusão era otimista e engolia o erro: a coluna sumia da tela e voltava
+  // no F5 seguinte, dando a impressão de que excluir nao funcionava quando na
+  // verdade o servidor tinha recusado. Agora desfaz e diz o motivo.
+  const apiDeleteColumn = async (colId) => {
+    const snapshot = columns;
     setColumns(prev => prev.filter(c => c.id !== colId));
-    apiCall(`/columns/${colId}`, { method: "DELETE" });
+    const res = await apiCall(`/columns/${colId}`, { method: "DELETE", returnError: true });
+    if (res?.error) {
+      setColumns(snapshot);
+      alert(`Não foi possível excluir a coluna: ${res.error}`);
+    }
   };
 
   const apiReorderColumns = (orderedIds) => {
@@ -4635,9 +4643,14 @@ function Dashboard({ currentUser, onLogout }) {
     setSubColumns(prev => prev.map(c => c.id === colId ? { ...c, ...patch } : c));
     apiCall(`/columns/${colId}`, { method: "PUT", body: JSON.stringify(patch) });
   };
-  const apiDeleteSubColumn = (colId) => {
+  const apiDeleteSubColumn = async (colId) => {
+    const snapshot = subColumns;
     setSubColumns(prev => prev.filter(c => c.id !== colId));
-    apiCall(`/columns/${colId}`, { method: "DELETE" });
+    const res = await apiCall(`/columns/${colId}`, { method: "DELETE", returnError: true });
+    if (res?.error) {
+      setSubColumns(snapshot);
+      alert(`Não foi possível excluir a coluna: ${res.error}`);
+    }
   };
 
   const apiUpdateAutomation = (aid, active) => {
