@@ -85,6 +85,12 @@ const sortByPriority = (list) => [...list].sort((a, b) =>
 // ela pular debaixo do cursor (o clique seguinte cairia em outra tarefa) nem
 // embaralhar a tela de quem estiver vendo o mesmo quadro.
 const sortTaskTree = (tasks) => sortByPriority(tasks).map(t => ({ ...t, subitems: sortByPriority(t.subitems || []) }));
+// Colunas de status que um horário automático pode observar. A coluna Status
+// nativa é referenciada como `null` — o valor dela mora no campo `status` da
+// linha, não no custom — e as criadas pelo usuário, pela própria id.
+const statusSourceList = (cols) => (cols || [])
+  .filter(c => c.type === "status")
+  .map(c => ({ id: c.id, name: c.name, sourceId: (c.builtIn && c.field === "status") ? null : c.id }));
 // Reordena `incoming` para acompanhar a ordem que já está na tela (`onScreen`).
 // O que não estava na tela — criado por outro usuário desde o último ciclo —
 // entra no fim, na ordem em que o servidor mandou.
@@ -1030,11 +1036,15 @@ function ChatBubble({ count, onClick }) {
 }
 
 // ─── COLUMN HEADER ───────────────────────────────────────────────────────────
-function ColHeader({ col, onRename, onDelete, onToggleDeadline, onChangeType, onDuplicate, onHide, onSetAutoTime, canDelete = true }) {
+function ColHeader({ col, onRename, onDelete, onToggleDeadline, onChangeType, onDuplicate, onHide, onSetAutoTime, statusColumns = [], canDelete = true }) {
   const [menu, setMenu] = useState(false);
   const [showTypeMenu, setShowTypeMenu] = useState(false);
+  const [showAutoMenu, setShowAutoMenu] = useState(false);
   const ref = useRef(null);
-  useClickOutside(ref, () => { setMenu(false); setShowTypeMenu(false); });
+  useClickOutside(ref, () => { setMenu(false); setShowTypeMenu(false); setShowAutoMenu(false); });
+  // Nome da coluna de status que este horário observa, para o menu mostrar de
+  // relance qual das colunas manda — com duas ou mais, "automático" não basta.
+  const autoSourceName = (statusColumns.find(sc => (sc.sourceId || null) === (col.autoTimeSource || null)) || {}).name || "Status";
 
   const typeIcons = { text: "📝", number: "🔢", date: "📅", time: "🕐", status: "🔵", people: "👥", priority: "🔴" };
   const typeLabels = { text: "Texto", number: "Número", date: "Data", time: "Horário", status: "Status", people: "Pessoas", priority: "Prioridade" };
@@ -1089,12 +1099,52 @@ function ColHeader({ col, onRename, onDelete, onToggleDeadline, onChangeType, on
           {/* Toggle deadline (date only) */}
           {col.type === "date" && menuItem(col.isDeadline ? "⏰" : "⏰", col.isDeadline ? "Desativar prazo" : "Ativar como prazo", "#fdab3d", onToggleDeadline)}
 
-          {/* Preenchimento automático (horário apenas). Clicar de novo na opção
-              já marcada desliga o automático e a coluna volta a ser manual. */}
-          {col.type === "time" && onSetAutoTime && (<>
-            {menuItem("▶", col.autoTime === "start" ? "Início automático (ativo)" : "Preencher no \"Em andamento\"", "#00c875", () => onSetAutoTime(col.autoTime === "start" ? null : "start"))}
-            {menuItem("⏹", col.autoTime === "end" ? "Fim automático (ativo)" : "Preencher no \"Feito\"", "#00c875", () => onSetAutoTime(col.autoTime === "end" ? null : "end"))}
-          </>)}
+          {/* Preenchimento automático (horário apenas). O quadro pode ter mais de
+              uma coluna de status — "Status Arte", "Status Produção" — então a
+              escolha é sempre par: qual status observar e se marca início ou fim. */}
+          {col.type === "time" && onSetAutoTime && (
+            <div style={{ position: "relative" }}>
+              <div onClick={(e) => { e.stopPropagation(); setShowAutoMenu(!showAutoMenu); }}
+                style={{ padding: "7px 10px", borderRadius: 6, cursor: "pointer", fontSize: 12, color: "#e8eaed", display: "flex", alignItems: "center", gap: 7, justifyContent: "space-between" }}
+                onMouseEnter={e => e.currentTarget.style.background = "rgba(255,255,255,.05)"} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                <span style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                  <span style={{ fontSize: 13, width: 18, textAlign: "center" }}>⏱</span>
+                  {col.autoTime ? `${col.autoTime === "start" ? "Início" : "Fim"} · ${autoSourceName}` : "Preenchimento automático"}
+                </span>
+                <span style={{ fontSize: 10, color: "#556" }}>▶</span>
+              </div>
+              {showAutoMenu && (
+                <div style={{ position: "absolute", left: "100%", top: -4, marginLeft: 4, background: "#2a2d35", borderRadius: 10, padding: 6, minWidth: 210, zIndex: 55, boxShadow: "0 8px 24px rgba(0,0,0,.6)", border: "1px solid #3a3d45" }}>
+                  <div onClick={() => { onSetAutoTime(null, null); setMenu(false); setShowAutoMenu(false); }}
+                    style={{ padding: "6px 10px", borderRadius: 6, cursor: "pointer", fontSize: 12, color: !col.autoTime ? "#6c5ce7" : "#e8eaed", fontWeight: !col.autoTime ? 600 : 400, display: "flex", alignItems: "center", gap: 7 }}
+                    onMouseEnter={e => e.currentTarget.style.background = "rgba(255,255,255,.05)"} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                    <span style={{ width: 18, textAlign: "center" }}>✎</span> Manual
+                    {!col.autoTime && <span style={{ marginLeft: "auto", fontSize: 11 }}>✓</span>}
+                  </div>
+                  {statusColumns.length === 0 && (
+                    <div style={{ padding: "6px 10px", fontSize: 11, color: "#556" }}>Nenhuma coluna de status neste quadro.</div>
+                  )}
+                  {statusColumns.map(sc => (
+                    <div key={sc.id}>
+                      <div style={{ padding: "6px 10px 2px", fontSize: 10, color: "#556", fontWeight: 700, textTransform: "uppercase", letterSpacing: .3 }}>{sc.name}</div>
+                      {[{ slot: "start", label: 'Início — ao virar "Em andamento"' }, { slot: "end", label: 'Fim — ao virar "Feito"' }].map(o => {
+                        const active = col.autoTime === o.slot && (col.autoTimeSource || null) === (sc.sourceId || null);
+                        return (
+                          <div key={o.slot} onClick={() => { onSetAutoTime(o.slot, sc.sourceId || null); setMenu(false); setShowAutoMenu(false); }}
+                            style={{ padding: "6px 10px", borderRadius: 6, cursor: "pointer", fontSize: 12, color: active ? "#00c875" : "#e8eaed", fontWeight: active ? 600 : 400, background: active ? "rgba(0,200,117,.1)" : "transparent", display: "flex", alignItems: "center", gap: 7 }}
+                            onMouseEnter={e => { if (!active) e.currentTarget.style.background = "rgba(255,255,255,.05)"; }}
+                            onMouseLeave={e => { if (!active) e.currentTarget.style.background = "transparent"; }}>
+                            <span style={{ width: 18, textAlign: "center" }}>{o.slot === "start" ? "▶" : "⏹"}</span> {o.label}
+                            {active && <span style={{ marginLeft: "auto", fontSize: 11 }}>✓</span>}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Duplicate */}
           {onDuplicate && menuItem("📋", "Duplicar coluna", "#579bfc", onDuplicate)}
@@ -1120,10 +1170,12 @@ function ColHeader({ col, onRename, onDelete, onToggleDeadline, onChangeType, on
 
 // ─── ADD COLUMN MODAL ────────────────────────────────────────────────────────
 function AddColumnModal({ onClose, onAdd, columns, title: modalTitle, linkParent }) {
-  const [name, setName] = useState(""); const [type, setType] = useState("text"); const [isDeadline, setIsDeadline] = useState(false); const [copyFrom, setCopyFrom] = useState(""); const [parentFor, setParentFor] = useState(""); const [autoTime, setAutoTime] = useState(null);
+  const [name, setName] = useState(""); const [type, setType] = useState("text"); const [isDeadline, setIsDeadline] = useState(false); const [copyFrom, setCopyFrom] = useState(""); const [parentFor, setParentFor] = useState(""); const [autoTime, setAutoTime] = useState(null); const [autoTimeSource, setAutoTimeSource] = useState(null);
   const types = [{ value: "text", label: "Texto", icon: "📝" }, { value: "number", label: "Número", icon: "🔢" }, { value: "date", label: "Data", icon: "📅" }, { value: "time", label: "Horário", icon: "🕐" }, { value: "status", label: "Status", icon: "🔵" }, { value: "people", label: "Pessoas", icon: "👥" }, { value: "priority", label: "Prioridade", icon: "🔴" }];
   const numericParents = linkParent ? columns.filter(c => c.type === "number") : [];
-  const handleAdd = () => { if (!name.trim()) return; const id = "col_" + Date.now(); const col = { id, name: name.trim(), type, field: id, builtIn: false, isDeadline: type === "date" && isDeadline, autoTime: type === "time" ? autoTime : null, width: type === "people" ? "110px" : type === "status" || type === "priority" ? "110px" : type === "date" ? "100px" : type === "time" ? "90px" : "80px" }; if (linkParent && type === "number" && parentFor) col.parentColumnId = parentFor; onAdd(col); onClose(); };
+  const statusSources = statusSourceList(columns);
+  const sourceLabel = (statusSources.find(sc => (sc.sourceId || null) === (autoTimeSource || null)) || {}).name || "Status";
+  const handleAdd = () => { if (!name.trim()) return; const id = "col_" + Date.now(); const col = { id, name: name.trim(), type, field: id, builtIn: false, isDeadline: type === "date" && isDeadline, autoTime: type === "time" ? autoTime : null, autoTimeSource: type === "time" && autoTime ? autoTimeSource : null, width: type === "people" ? "110px" : type === "status" || type === "priority" ? "110px" : type === "date" ? "100px" : type === "time" ? "90px" : "80px" }; if (linkParent && type === "number" && parentFor) col.parentColumnId = parentFor; onAdd(col); onClose(); };
   const handleCopy = () => { if (!copyFrom) return; const src = columns.find(c => c.id === copyFrom); if (!src) return; const id = "col_" + Date.now(); const col = { ...src, id, field: id, name: src.name + " (cópia)", builtIn: false }; if (linkParent) col.parentColumnId = src.id; onAdd(col); onClose(); };
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, backdropFilter: "blur(4px)" }} onClick={onClose}>
@@ -1154,11 +1206,24 @@ function AddColumnModal({ onClose, onAdd, columns, title: modalTitle, linkParent
                 </div>
               ))}
             </div>
-            {autoTime && (
-              <div style={{ fontSize: 11, color: "#00c875", marginTop: 8 }}>
-                Preenche quando o status virar “{autoTime === "start" ? "Em andamento" : "Feito"}”, e zera na virada do dia.
+            {autoTime && (<>
+              {/* Com mais de uma coluna de status no quadro é obrigatório dizer
+                  qual delas manda, senão as duas disputariam o mesmo relógio. */}
+              <div style={{ marginTop: 10 }}>
+                <div style={{ fontSize: 11, color: "#778ca3", fontWeight: 600, marginBottom: 4 }}>Seguir qual coluna de status?</div>
+                <select value={autoTimeSource === null ? "__native__" : autoTimeSource}
+                  onChange={e => setAutoTimeSource(e.target.value === "__native__" ? null : e.target.value)}
+                  style={{ width: "100%", padding: "8px 10px", borderRadius: 8, border: "1px solid #444", background: "#13151a", color: "#e8eaed", fontSize: 12 }}>
+                  {statusSources.length === 0 && <option value="__native__">Status</option>}
+                  {statusSources.map(sc => (
+                    <option key={sc.id} value={sc.sourceId === null ? "__native__" : sc.sourceId}>{sc.name}</option>
+                  ))}
+                </select>
               </div>
-            )}
+              <div style={{ fontSize: 11, color: "#00c875", marginTop: 8 }}>
+                Preenche quando “{sourceLabel}” virar “{autoTime === "start" ? "Em andamento" : "Feito"}”, e zera na virada do dia.
+              </div>
+            </>)}
           </div>
         )}
         {linkParent && type === "number" && numericParents.length > 0 && (
@@ -1392,7 +1457,8 @@ function BoardView({ tasks, setTasks, apiUpdateTask, apiUpdateSub, apiAddTask, a
                   onRename={v => { setColumns(p => p.map(c => c.id === col.id ? { ...c, name: v } : c)); if (apiUpdateColumn) apiUpdateColumn(col.id, { name: v }); }}
                   onDelete={!col.builtIn && perms.deleteColumns ? () => { if (apiDeleteColumn) apiDeleteColumn(col.id); else setColumns(p => p.filter(c => c.id !== col.id)); } : null}
                   onToggleDeadline={() => { const nv = !col.isDeadline; setColumns(p => p.map(c => c.id === col.id ? { ...c, isDeadline: nv } : c)); if (apiUpdateColumn) apiUpdateColumn(col.id, { isDeadline: nv }); }}
-                  onSetAutoTime={apiUpdateColumn ? (v) => { setColumns(p => p.map(c => c.id === col.id ? { ...c, autoTime: v } : c)); apiUpdateColumn(col.id, { autoTime: v }); } : null}
+                  onSetAutoTime={apiUpdateColumn ? (v, src) => { setColumns(p => p.map(c => c.id === col.id ? { ...c, autoTime: v, autoTimeSource: src } : c)); apiUpdateColumn(col.id, { autoTime: v, autoTimeSource: src }); } : null}
+                  statusColumns={statusSourceList(columns)}
                   onChangeType={(newType) => { setColumns(p => p.map(c => c.id === col.id ? { ...c, type: newType, isDeadline: newType === "date" ? c.isDeadline : false, autoTime: newType === "time" ? c.autoTime : null } : c)); if (apiUpdateColumn) apiUpdateColumn(col.id, { type: newType }); }}
                   onDuplicate={() => { const newId = "col_" + Date.now(); const dup = { ...col, id: newId, field: newId, name: col.name + " (cópia)", builtIn: false }; setColumns(p => [...p, dup]); if (apiUpdateColumn) apiCall("/columns", { method: "POST", body: JSON.stringify(dup) }); }}
                   canDelete={col.builtIn ? true : perms.deleteColumns}
@@ -1556,7 +1622,8 @@ function SubitemsBlock({ highlights = {}, onClearHighlight = () => {}, task, all
               onRename={null}
               onDelete={!col.builtIn && perms.deleteColumns ? () => { if (window.confirm(`Excluir a coluna "${col.name}" de TODAS as tarefas? Essa ação nao pode ser desfeita.`)) { if (apiDeleteColumn) apiDeleteColumn(col.id); else setColumns(p => p.filter(c => c.id !== col.id)); } } : null}
               onToggleDeadline={() => { const nv = !col.isDeadline; setColumns(p => p.map(c => c.id === col.id ? { ...c, isDeadline: nv } : c)); if (apiUpdateColumn) apiUpdateColumn(col.id, { isDeadline: nv }); }}
-              onSetAutoTime={apiUpdateColumn ? (v) => { setColumns(p => p.map(c => c.id === col.id ? { ...c, autoTime: v } : c)); apiUpdateColumn(col.id, { autoTime: v }); } : null}
+              onSetAutoTime={apiUpdateColumn ? (v, src) => { setColumns(p => p.map(c => c.id === col.id ? { ...c, autoTime: v, autoTimeSource: src } : c)); apiUpdateColumn(col.id, { autoTime: v, autoTimeSource: src }); } : null}
+              statusColumns={statusSourceList(allCols)}
               onChangeType={(newType) => { setColumns(p => p.map(c => c.id === col.id ? { ...c, type: newType, isDeadline: newType === "date" ? c.isDeadline : false, autoTime: newType === "time" ? c.autoTime : null } : c)); if (apiUpdateColumn) apiUpdateColumn(col.id, { type: newType }); }}
               onDuplicate={() => { const newId = "col_" + Date.now(); const dup = { ...col, id: newId, field: newId, name: col.name + " (cópia)", builtIn: false, scope: 'subitem', taskId: task.id, parentColumnId: col.id }; setSubColumns(p => [...p, dup]); apiCall("/columns", { method: "POST", body: JSON.stringify(dup) }); }}
               onHide={HIDEABLE_NATIVE.includes(col.id) && perms.addColumns ? () => hideInTask(col.id) : null}
@@ -1577,7 +1644,8 @@ function SubitemsBlock({ highlights = {}, onClearHighlight = () => {}, task, all
               onRename={v => apiUpdateSubColumn ? apiUpdateSubColumn(sc.id, { name: v }) : setSubColumns(p => p.map(c => c.id === sc.id ? { ...c, name: v } : c))}
               onDelete={perms.deleteColumns ? () => apiDeleteSubColumn ? apiDeleteSubColumn(sc.id) : setSubColumns(p => p.filter(c => c.id !== sc.id)) : null}
               onToggleDeadline={() => apiUpdateSubColumn ? apiUpdateSubColumn(sc.id, { isDeadline: !sc.isDeadline }) : setSubColumns(p => p.map(c => c.id === sc.id ? { ...c, isDeadline: !c.isDeadline } : c))}
-              onSetAutoTime={apiUpdateSubColumn ? (v) => apiUpdateSubColumn(sc.id, { autoTime: v }) : null}
+              onSetAutoTime={apiUpdateSubColumn ? (v, src) => apiUpdateSubColumn(sc.id, { autoTime: v, autoTimeSource: src }) : null}
+              statusColumns={statusSourceList([...allCols, ...taskSubColumns])}
               onChangeType={(newType) => apiUpdateSubColumn ? apiUpdateSubColumn(sc.id, { type: newType, isDeadline: newType === "date" ? sc.isDeadline : false }) : setSubColumns(p => p.map(c => c.id === sc.id ? { ...c, type: newType, isDeadline: newType === "date" ? c.isDeadline : false } : c))}
               onDuplicate={() => { const newId = "col_" + Date.now(); const dup = { ...sc, id: newId, field: newId, name: sc.name + " (cópia)", builtIn: false, taskId: task.id }; setSubColumns(p => [...p, dup]); apiCall("/columns", { method: "POST", body: JSON.stringify(dup) }); }}
               canDelete={perms.deleteColumns}
