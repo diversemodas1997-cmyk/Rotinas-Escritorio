@@ -3460,6 +3460,7 @@ function LoginScreen({ onLogin }) {
       return;
     }
     if (!username.trim() || !password.trim()) { setError("Preencha todos os campos"); return; }
+    if (username.includes("@")) { setError("Entre com o nome de usuário, não com o e-mail"); return; }
     setLoading(true); setError("");
     try {
       const data = await apiCall("/auth/login", { method: "POST", body: JSON.stringify({ username: username.trim().toLowerCase(), password }) });

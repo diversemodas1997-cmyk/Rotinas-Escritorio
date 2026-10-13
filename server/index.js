@@ -756,13 +756,14 @@ const uploadHandler = multer({
   limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB por arquivo
 });
 
-// Login: username + password only. `email` is still accepted in the body so an
-// old cached client keeps working (matched against username or legacy email).
+// Login: nome de usuário + senha, e só isso. O e-mail deixou de valer como
+// login (decisão de 13/10/2026): continua no cadastro só como dado de perfil.
 app.post('/api/auth/login', (req, res) => {
-  const { username, email, password } = req.body || {};
-  const id = normalizeUsername(username ?? email);
+  const { username, password } = req.body || {};
+  const id = normalizeUsername(username);
   if (!id || !password) return res.status(400).json({ error: 'Usuário e senha são obrigatórios' });
-  const u = db.prepare('SELECT * FROM users WHERE username=? OR lower(email)=?').get(id, id);
+  if (id.includes('@')) return res.status(400).json({ error: 'Entre com o nome de usuário, não com o e-mail' });
+  const u = db.prepare('SELECT * FROM users WHERE username=?').get(id);
   if (!u || !bcrypt.compareSync(password, u.password)) return res.status(401).json({ error: 'Credenciais inválidas' });
   const token = jwt.sign({ id: u.id, name: u.name, username: u.username, role: u.role }, JWT_SECRET, { expiresIn: '7d' });
   res.json({ token, user: { id: u.id, name: u.name, username: u.username, role: u.role, phone: u.phone, department: u.department, bio: u.bio, avatar_color: u.avatar_color } });
