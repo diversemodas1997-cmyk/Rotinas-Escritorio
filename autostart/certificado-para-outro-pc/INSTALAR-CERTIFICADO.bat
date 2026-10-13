@@ -10,10 +10,11 @@ if errorlevel 1 (
 )
 
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "Import-Certificate -FilePath '%~dp0ca.crt' -CertStoreLocation Cert:\LocalMachine\Root | Out-Null; Write-Host 'Certificado instalado.' -ForegroundColor Green; foreach ($ip in '193.168.0.200','192.168.1.158') { $ok = Test-NetConnection $ip -Port 3443 -InformationLevel Quiet -WarningAction SilentlyContinue; Write-Host ('Servidor em ' + $ip + ': ' + $(if ($ok) {'ALCANCADO'} else {'sem resposta'})) }"
+  "Import-Certificate -FilePath '%~dp0ca.crt' -CertStoreLocation Cert:\LocalMachine\Root | Out-Null; Write-Host 'Certificado instalado.' -ForegroundColor Green; foreach ($ip in 'DESKTOP-SOV61AF','193.168.0.200','192.168.1.158') { $ok = Test-NetConnection $ip -Port 3443 -InformationLevel Quiet -WarningAction SilentlyContinue; Write-Host ('Servidor em ' + $ip + ': ' + $(if ($ok) {'ALCANCADO'} else {'sem resposta'})) }"
 
 echo.
 echo Feche TODAS as janelas do navegador e abra de novo:
+echo   https://DESKTOP-SOV61AF:3443  (serve no cabo e no Wi-Fi)
 echo   https://193.168.0.200:3443   (computador no cabo)
 echo   https://192.168.1.158:3443   (computador no Wi-Fi)
 echo.
