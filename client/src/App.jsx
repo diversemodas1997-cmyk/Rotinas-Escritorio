@@ -2719,7 +2719,7 @@ function printReportSheet(d, { periodLabel, boardName }) {
     <thead><tr><th>Responsável</th><th class="n">Qtd.</th></tr></thead>
     <tbody>${d.perUser.map(x => `<tr><td>${esc(x.name)}</td><td class="n">${num(x.value)}</td></tr>`).join("")}</tbody>
   </table>
-  <div class="nota">Cada pessoa fica com o que ela mesma digitou. "Autor não registrado" são valores lançados antes de 13/10/2026, quando a autoria passou a ser gravada.</div>` : ""}
+  <div class="nota">Cada pessoa fica com o que ela mesma digitou. Valores lançados antes de 13/10/2026, quando a autoria passou a ser gravada, ficam com os responsáveis da linha, divididos por igual.</div>` : ""}
 
   <div class="assin"><div>Conferido por</div><div>Data</div></div>
   <div class="rodape">
@@ -2881,7 +2881,7 @@ function ReportsPanel({ onClose, fullscreen, onToggleFullscreen, boardId, boardN
                       </div>
                     ))}
                   </div>
-                  <div style={{ fontSize: 10, color: "#556", marginTop: 6 }}>Cada pessoa fica com o que ela mesma digitou. "Autor não registrado" são valores lançados antes de 13/10/2026, quando a autoria passou a ser gravada.</div>
+                  <div style={{ fontSize: 10, color: "#556", marginTop: 6 }}>Cada pessoa fica com o que ela mesma digitou. Valores lançados antes de 13/10/2026, quando a autoria passou a ser gravada, ficam com os responsáveis da linha, divididos por igual.</div>
                 </div>
               )}
 

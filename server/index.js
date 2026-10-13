@@ -204,6 +204,57 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_number_entries_cell ON number_entries (date, task_id, subitem_id, column_id);
 `);
+// O autor passa a ser guardado pelo id do usuário. Só com o nome, renomear
+// alguém (ex.: "Gabriela" → "Gabriela Helena") separava a mesma pessoa em duas
+// linhas no relatório.
+(function migrateNumberEntriesUserId() {
+  const cols = db.prepare("PRAGMA table_info(number_entries)").all().map(c => c.name);
+  if (!cols.includes('user_id')) {
+    db.exec("ALTER TABLE number_entries ADD COLUMN user_id INTEGER");
+    db.exec("UPDATE number_entries SET user_id = (SELECT id FROM users WHERE users.name = number_entries.user_name) WHERE user_id IS NULL");
+  }
+})();
+
+// Nomes de responsável são gravados como texto nos quadros e nas fotos do dia.
+// Quem foi renomeado ficou com o nome antigo ("Camila", "Gabriela") espalhado
+// pelo banco, sem casar com nenhum usuário. Isto acha o usuário atual de um
+// nome: igual, ou o único cujo nome começa com aquele primeiro nome.
+function makeUserNameResolver() {
+  const users = db.prepare('SELECT id, name FROM users').all();
+  const exact = new Map(users.map(u => [u.name.trim().toLowerCase(), u.name]));
+  return (raw) => {
+    const n = String(raw || '').trim();
+    if (!n) return n;
+    const key = n.toLowerCase();
+    if (exact.has(key)) return exact.get(key);
+    const hits = users.filter(u => u.name.trim().toLowerCase().startsWith(key + ' '));
+    return hits.length === 1 ? hits[0].name : n;
+  };
+}
+// Troca, nos responsáveis de tarefas, subitens e fotos do dia, cada nome pelo
+// que mapNames devolver. Usado ao subir (nomes antigos) e ao renomear alguém.
+function rewriteResponsibleNames(mapNames) {
+  let n = 0;
+  const tx = db.transaction(() => {
+    for (const [table, key] of [['tasks', 'id'], ['subitems', 'id'], ['daily_snapshots', 'rowid']]) {
+      const upd = db.prepare(`UPDATE ${table} SET responsible=? WHERE ${key}=?`);
+      for (const r of db.prepare(`SELECT ${key} AS k, responsible FROM ${table}`).all()) {
+        let arr; try { arr = JSON.parse(r.responsible || '[]'); } catch { continue; }
+        if (!Array.isArray(arr)) continue;
+        const out = JSON.stringify([...new Set(arr.map(mapNames).filter(Boolean))]);
+        if (out !== JSON.stringify(arr)) { upd.run(out, r.k); n++; }
+      }
+    }
+    const updEntry = db.prepare('UPDATE number_entries SET user_name=? WHERE user_id=?');
+    for (const u of db.prepare('SELECT id, name FROM users').all()) updEntry.run(u.name, u.id);
+  });
+  tx();
+  return n;
+}
+(function fixStaleResponsibleNames() {
+  const n = rewriteResponsibleNames(makeUserNameResolver());
+  if (n) console.log(`🧹 Nomes de responsável atualizados em ${n} linha(s)`);
+})();
 
 // Quadro restrito: só quem está na lista de acesso enxerga, mesmo que seja
 // responsável por alguma tarefa dele. Padrão 0 = mantém o comportamento antigo.
@@ -636,10 +687,13 @@ function runDailyRollover() {
 // ===== Autoria dos números (alimenta o "por responsável" do relatório) =====
 const toNum = v => { const n = typeof v === 'number' ? v : (v != null && v !== '' ? Number(v) : 0); return Number.isFinite(n) ? n : 0; };
 const parseObj = s => { try { return typeof s === 'string' ? JSON.parse(s || '{}') : (s || {}); } catch { return {}; } };
-const insNumberEntry = db.prepare('INSERT INTO number_entries (date, task_id, subitem_id, column_id, user_name, delta) VALUES (?, ?, ?, ?, ?, ?)');
-// Nome atual do usuário (o do token pode estar velho se o nome foi editado).
+const insNumberEntryStmt = db.prepare('INSERT INTO number_entries (date, task_id, subitem_id, column_id, user_name, user_id, delta) VALUES (?, ?, ?, ?, ?, ?, ?)');
+const insNumberEntry = { run: (date, taskId, subitemId, colId, who, delta) => insNumberEntryStmt.run(date, taskId, subitemId, colId, who.name, who.id, delta) };
+// Autor da edição: o id é o que vale; o nome é o atual (o do token pode estar
+// velho se o nome foi editado).
 function authorName(req) {
-  return db.prepare('SELECT name FROM users WHERE id=?').get(req.user.id)?.name || req.user.name || '—';
+  const name = db.prepare('SELECT name FROM users WHERE id=?').get(req.user.id)?.name || req.user.name || '—';
+  return { id: req.user.id ?? null, name };
 }
 // Registra só as células que o rollover fotografa, para a soma das diferenças
 // de um dia bater com o valor guardado em daily_snapshots.
@@ -867,7 +921,11 @@ app.put('/api/users/:id', auth, (req, res) => {
   if (password) { u.push('password=?'); p.push(bcrypt.hashSync(password, 10)); }
   if (!u.length) return res.status(400).json({ error: 'Nada para atualizar' });
   p.push(id);
+  const oldName = db.prepare('SELECT name FROM users WHERE id=?').get(id)?.name;
   db.prepare(`UPDATE users SET ${u.join(',')} WHERE id=?`).run(...p);
+  // Renomear leva o nome novo para os responsáveis e o histórico, senão a
+  // mesma pessoa aparece com dois nomes no relatório.
+  if (oldName && name && name !== oldName) rewriteResponsibleNames(n => n === oldName ? name : n);
   res.json(db.prepare('SELECT id,name,username,role,phone,department,bio,avatar_color FROM users WHERE id=?').get(id));
 });
 app.put('/api/users/:id/role',auth,adminOnly,(req,res)=>{const{role}=req.body;if(!['admin','collaborator'].includes(role))return res.status(400).json({error:'Cargo inválido'});const ac=db.prepare("SELECT COUNT(*) as c FROM users WHERE role='admin'").get().c;const t=db.prepare('SELECT role FROM users WHERE id=?').get(req.params.id);if(t?.role==='admin'&&role!=='admin'&&ac<=1)return res.status(400).json({error:'Precisa de 1 admin'});db.prepare('UPDATE users SET role=? WHERE id=?').run(role,req.params.id);res.json({success:true});});
@@ -1239,6 +1297,7 @@ app.post('/api/tasks',auth,(req,res)=>{
   // Parent deadline always reflects today; client-provided value is ignored.
   db.prepare('INSERT INTO tasks (id,name,status,priority,deadline,responsible,total_orders,total_cancellations,custom,sort_order,board_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)')
     .run(id, name, status || 'Não iniciado', priority || 'Média', brtDateString(), JSON.stringify(responsible || []), totalOrders || 0, totalCancellations || 0, JSON.stringify(custom || {}), m + 1, board);
+  recordTaskNumbers(req, id, {}, { total_orders: totalOrders, total_cancellations: totalCancellations });
   res.json({ success: true });
 });
 app.put('/api/tasks/:id',auth,(req,res)=>{
@@ -1565,8 +1624,11 @@ app.get('/api/reports', auth, adminOnly, (req, res) => {
     for (const r of liveSnapshotRows(today)) if (!boardId || r.board_id === boardId) rows.push(r);
   }
 
+  // Autor pelo id → nome atual; o nome gravado só vale se o usuário foi excluído.
   const authorRows = db.prepare(
-    'SELECT date, task_id, subitem_id, column_id, user_name, SUM(delta) AS v FROM number_entries WHERE date >= ? AND date <= ? GROUP BY date, task_id, subitem_id, column_id, user_name'
+    `SELECT e.date, e.task_id, e.subitem_id, e.column_id, COALESCE(u.name, e.user_name) AS user_name, SUM(e.delta) AS v
+     FROM number_entries e LEFT JOIN users u ON u.id = e.user_id
+     WHERE e.date >= ? AND e.date <= ? GROUP BY e.date, e.task_id, e.subitem_id, e.column_id, COALESCE(u.name, e.user_name)`
   ).all(start, end);
   const authorsByCell = new Map();
   for (const a of authorRows) {
@@ -1574,7 +1636,9 @@ app.get('/api/reports', auth, adminOnly, (req, res) => {
     if (!authorsByCell.has(k)) authorsByCell.set(k, []);
     authorsByCell.get(k).push([a.user_name, Number(a.v) || 0]);
   }
-  const UNATTRIBUTED = '— Autor não registrado';
+  const resolveName = makeUserNameResolver();
+  const NO_RESPONSIBLE = 'Sem responsável';
+  const taskResponsible = new Map(db.prepare('SELECT id, responsible FROM tasks').all().map(t => [t.id, t.responsible]));
 
   const byDay = {};
   const perUser = {};
@@ -1589,13 +1653,21 @@ app.get('/api/reports', auth, adminOnly, (req, res) => {
     if (!perTask[key]) perTask[key] = { task_id: r.task_id, subitem_id: r.subitem_id, column_id: r.column_id, task_name: r.task_name, subitem_name: r.subitem_name, column_name: r.column_name, value: 0 };
     perTask[key].value += v;
     // Cada usuário fica com o que ele mesmo lançou naquela célula naquele dia.
-    // O que sobra (valores digitados antes de existir o registro de autoria)
-    // aparece separado, em vez de ser rateado entre os responsáveis.
+    // O que sobra (valores digitados antes de existir o registro de autoria,
+    // em 13/10/2026) fica com os responsáveis da célula, dividido por igual.
     const contrib = authorsByCell.get(r.date + '|' + r.task_id + '|' + (r.subitem_id || '') + '|' + r.column_id);
     let attributed = 0;
     if (contrib) for (const [name, dv] of contrib) { perUser[name] = (perUser[name] || 0) + dv; attributed += dv; }
     const rest = v - attributed;
-    if (Math.abs(rest) > 1e-9) perUser[UNATTRIBUTED] = (perUser[UNATTRIBUTED] || 0) + rest;
+    if (Math.abs(rest) > 1e-9) {
+      let resp = [];
+      try { resp = JSON.parse(r.responsible || '[]'); } catch {}
+      // Subitem sem responsável naquele dia: vale o da tarefa.
+      if (!Array.isArray(resp) || !resp.length) { try { resp = JSON.parse(taskResponsible.get(r.task_id) || '[]'); } catch {} }
+      const names = [...new Set((Array.isArray(resp) ? resp : []).map(resolveName).filter(Boolean))];
+      if (!names.length) names.push(NO_RESPONSIBLE);
+      for (const n of names) perUser[n] = (perUser[n] || 0) + rest / names.length;
+    }
   }
   for (const k of Object.keys(perUser)) if (Math.abs(perUser[k]) < 1e-9) delete perUser[k];
   res.json({
