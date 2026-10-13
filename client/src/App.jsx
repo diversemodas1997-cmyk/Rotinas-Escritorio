@@ -4745,6 +4745,29 @@ function Dashboard({ currentUser, onLogout }) {
     }));
   };
 
+  // O PUT leva só o que esta pessoa mudou. Mandar a linha inteira gravava de
+  // volta os números que estavam na tela dela — se a tela estava atrasada, um
+  // simples clique de status desfazia o que outra pessoa tinha digitado e o
+  // relatório creditava o número a quem clicou. As células do custom vão em
+  // customPatch (null = apagar), e o servidor mescla com o que está gravado.
+  const changedFields = (before, after) => {
+    if (!after) return null;
+    if (!before) return after;
+    const out = {};
+    for (const k of Object.keys(after)) {
+      if (k === "custom" || k === "subitems" || k === "updates") continue;
+      if (JSON.stringify(after[k]) !== JSON.stringify(before[k])) out[k] = after[k];
+    }
+    const bc = before.custom || {}, ac = after.custom || {};
+    const patch = {};
+    for (const k of new Set([...Object.keys(bc), ...Object.keys(ac)])) {
+      if (!(k in ac)) patch[k] = null;
+      else if (JSON.stringify(ac[k]) !== JSON.stringify(bc[k])) patch[k] = ac[k];
+    }
+    if (Object.keys(patch).length) out.customPatch = patch;
+    return Object.keys(out).length ? out : null;
+  };
+
   const apiUpdateTask = (tid, newTask) => {
     const current = tasks.find(t => t.id === tid);
     const updated = typeof newTask === "function" ? newTask(current || {}) : newTask;
@@ -4754,7 +4777,9 @@ function Dashboard({ currentUser, onLogout }) {
     // como suja; a reorganização sai no fim do gesto.
     if (!!current && updated && (current.priority !== updated.priority || current.status !== updated.status)) markReorderPending();
     setTasks(prev => prev.map(t => t.id === tid ? (typeof newTask === "function" ? newTask(t) : newTask) : t));
-    apiCall(`/tasks/${tid}`, { method: "PUT", body: JSON.stringify(updated) })
+    const body = changedFields(current, updated);
+    if (!body) return;
+    apiCall(`/tasks/${tid}`, { method: "PUT", body: JSON.stringify(body) })
       .then(res => mergeAutoTimes("task", tid, null, res));
   };
 
@@ -4768,7 +4793,9 @@ function Dashboard({ currentUser, onLogout }) {
       if (t.id !== tid) return t;
       return { ...t, subitems: t.subitems.map(s => s.id === sid ? (typeof newSub === "function" ? newSub(s) : newSub) : s) };
     }));
-    apiCall(`/subitems/${sid}`, { method: "PUT", body: JSON.stringify(subToSave) })
+    const body = changedFields(current, subToSave);
+    if (!body) return;
+    apiCall(`/subitems/${sid}`, { method: "PUT", body: JSON.stringify(body) })
       .then(res => mergeAutoTimes("subitem", tid, sid, res));
   };
 

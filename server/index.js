@@ -1300,13 +1300,28 @@ app.post('/api/tasks',auth,(req,res)=>{
   recordTaskNumbers(req, id, {}, { total_orders: totalOrders, total_cancellations: totalCancellations });
   res.json({ success: true });
 });
+// O cliente manda só as células que a pessoa mudou (customPatch; null = apagar)
+// e o servidor mescla com o que está gravado. Assim um clique de status numa
+// tela desatualizada não regrava números antigos por cima dos de outra pessoa —
+// nem os credita a quem clicou. "custom" inteiro segue aceito por compatibilidade.
+function incomingCustom(body, stored) {
+  if (body.customPatch && typeof body.customPatch === 'object') {
+    const next = parseObj(stored);
+    for (const [k, v] of Object.entries(body.customPatch)) {
+      if (v === null) delete next[k]; else next[k] = v;
+    }
+    return next;
+  }
+  return body.custom;
+}
 app.put('/api/tasks/:id',auth,(req,res)=>{
-  const { name, status, priority, responsible, totalOrders, totalCancellations, custom } = req.body;
+  const { name, status, priority, responsible, totalOrders, totalCancellations } = req.body;
   // Vira o dia antes de comparar: uma edição logo após a meia-noite precisa
   // partir do valor já zerado, senão a diferença cai no dia errado.
   try { runDailyRollover(); } catch {}
   const t = db.prepare('SELECT * FROM tasks WHERE id=?').get(req.params.id);
   if (!t) return res.status(404).json({ error: 'Não encontrada' });
+  const custom = incomingCustom(req.body, t.custom);
   const nextStatus = status ?? t.status;
   // Horários automáticos entram por cima do custom final (o do corpo, se veio),
   // nunca por baixo — senão a escrita do cliente apagaria o horário recém-gravado.
@@ -1341,10 +1356,11 @@ app.delete('/api/tasks/:id', auth, canManageTasks, (req, res) => {
 });
 
 app.put('/api/subitems/:id',auth,(req,res)=>{
-  const { name, owner, status, priority, responsible, total, deadline, custom } = req.body;
+  const { name, owner, status, priority, responsible, total, deadline } = req.body;
   try { runDailyRollover(); } catch {}
   const s = db.prepare('SELECT * FROM subitems WHERE id=?').get(req.params.id);
   if (!s) return res.status(404).json({ error: 'Não encontrado' });
+  const custom = incomingCustom(req.body, s.custom);
   const nextStatus = status ?? s.status;
   const boardId = db.prepare('SELECT board_id FROM tasks WHERE id=?').get(s.task_id)?.board_id || null;
   let nextCustom = custom
