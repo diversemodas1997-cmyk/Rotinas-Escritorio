@@ -2,7 +2,9 @@ import { useState, useMemo, useRef, useEffect } from "react";
 import { flushSync } from "react-dom";
 
 // ─── API CLIENT ──────────────────────────────────────────────────────────────
-const API_URL = window.location.hostname === "localhost" ? "http://localhost:3001" : "";
+// Só o servidor de desenvolvimento (porta 3000) fala com a API em outra porta;
+// servido pelo próprio Node (3001 ou HTTPS 3443), a API está na mesma origem.
+const API_URL = window.location.port === "3000" ? "http://localhost:3001" : "";
 let _token = localStorage.getItem("rotina_token");
 
 let _inFlightMutations = 0;

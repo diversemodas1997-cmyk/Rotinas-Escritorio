@@ -6,3 +6,4 @@ server/backups/
 client/build/
 .env
 autostart/server.log
+autostart/backup-drive.log

@@ -1,4 +1,4 @@
-const API_URL = process.env.REACT_APP_API_URL || (window.location.hostname === 'localhost' ? 'http://localhost:3001' : '') ;
+const API_URL = process.env.REACT_APP_API_URL || (window.location.port === '3000' ? 'http://localhost:3001' : '');
 
 let authToken = localStorage.getItem('rotina_token');
 

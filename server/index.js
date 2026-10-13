@@ -17,7 +17,22 @@ const PORT = process.env.PORT || 3001;
 const JWT_SECRET = process.env.JWT_SECRET || 'rotina-escritorio-secret-2026';
 const BACKUP_TOKEN = process.env.BACKUP_TOKEN || '';
 
+// Servidor no escritório: HTTPS com o certificado da fábrica (o mesmo do
+// Gerador-OS, que as máquinas já confiam). Sem HTTPS o navegador desliga o
+// popup de notificação para quem entra pelo IP. O HTTP da porta 3001 continua
+// para o próprio servidor (localhost) e manda quem vem pela rede para o HTTPS.
+const HTTPS_PORT = Number(process.env.HTTPS_PORT) || 3443;
+const TLS_ON = !!(process.env.TLS_CERT && process.env.TLS_KEY);
+
 app.use(cors());
+if (TLS_ON) {
+  app.use((req, res, next) => {
+    if (req.secure) return next();
+    const host = (req.headers.host || '').replace(/:\d+$/, '');
+    if (host === 'localhost' || host === '127.0.0.1' || host === '[::1]') return next();
+    res.redirect(301, `https://${host}:${HTTPS_PORT}${req.originalUrl}`);
+  });
+}
 app.use(express.json({ limit: '10mb' }));
 
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'database.sqlite');
@@ -1714,3 +1729,11 @@ app.post('/api/admin/wipe-updates', auth, adminOnly, async (req, res) => {
 if(process.env.NODE_ENV==='production'){app.use(express.static(path.join(__dirname,'../client/build')));app.get('*',(req,res)=>res.sendFile(path.join(__dirname,'../client/build/index.html')));}
 
 app.listen(PORT,()=>console.log(`🚀 Server running on port ${PORT}`));
+if (TLS_ON) {
+  try {
+    const tls = { cert: fs.readFileSync(process.env.TLS_CERT), key: fs.readFileSync(process.env.TLS_KEY) };
+    require('https').createServer(tls, app).listen(HTTPS_PORT, () => console.log(`🔒 HTTPS na porta ${HTTPS_PORT}`));
+  } catch (e) {
+    console.error('HTTPS não subiu (confira TLS_CERT/TLS_KEY no .env):', e.message);
+  }
+}
