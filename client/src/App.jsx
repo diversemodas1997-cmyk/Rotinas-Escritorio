@@ -2935,6 +2935,21 @@ function AdminPanel({ users, onUpdateRole, onCreateUser, onDeleteUser, onClose, 
   const [newRole, setNewRole] = useState("collaborator");
   const [createErr, setCreateErr] = useState("");
   const [creating, setCreating] = useState(false);
+  // Redefinir senha de alguém que esqueceu (o login não tem recuperação por e-mail).
+  const [resetFor, setResetFor] = useState(null); // id do usuário com o campo aberto
+  const [resetPass, setResetPass] = useState("");
+  const [resetMsg, setResetMsg] = useState({});   // { [userId]: { ok, text } }
+  const [resetting, setResetting] = useState(false);
+
+  const submitReset = async (u) => {
+    if (resetPass.length < 4) { setResetMsg(m => ({ ...m, [u.id]: { ok: false, text: "Senha deve ter pelo menos 4 caracteres" } })); return; }
+    setResetting(true);
+    const r = await apiCall(`/users/${u.id}`, { method: "PUT", returnError: true, body: JSON.stringify({ password: resetPass }) });
+    setResetting(false);
+    if (r?.error) { setResetMsg(m => ({ ...m, [u.id]: { ok: false, text: r.error } })); return; }
+    setResetMsg(m => ({ ...m, [u.id]: { ok: true, text: `Senha nova de @${u.username}: ${resetPass} — passe para a pessoa e peça para trocar no perfil.` } }));
+    setResetFor(null); setResetPass("");
+  };
 
   const submitCreate = async () => {
     setCreateErr("");
@@ -3140,6 +3155,21 @@ function AdminPanel({ users, onUpdateRole, onCreateUser, onDeleteUser, onClose, 
                       {isCurrentUser && <span style={{ fontSize: 9, color: "#6c5ce7", fontWeight: 600, background: "rgba(108,92,231,.15)", padding: "1px 6px", borderRadius: 8 }}>Você</span>}
                     </div>
                     <div style={{ fontSize: 11, color: "#778ca3" }}>@{u.username}</div>
+                    {resetFor === u.id && (
+                      <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+                        <input autoFocus value={resetPass} onChange={e => { setResetPass(e.target.value); setResetMsg(m => ({ ...m, [u.id]: null })); }}
+                          onKeyDown={e => { if (e.key === "Enter") submitReset(u); if (e.key === "Escape") { setResetFor(null); setResetPass(""); } }}
+                          placeholder="Senha nova (mín. 4)" type="text" autoComplete="off"
+                          style={{ flex: 1, minWidth: 0, padding: "6px 8px", borderRadius: 6, border: "1px solid #444", background: "#13151a", color: "#e8eaed", fontSize: 12, outline: "none" }} />
+                        <button onClick={() => submitReset(u)} disabled={resetting}
+                          style={{ padding: "6px 10px", borderRadius: 6, border: "none", background: resetting ? "#555" : "#6c5ce7", color: "#fff", fontSize: 11, fontWeight: 700, cursor: resetting ? "wait" : "pointer" }}>
+                          {resetting ? "Salvando..." : "Salvar"}
+                        </button>
+                      </div>
+                    )}
+                    {resetMsg[u.id] && (
+                      <div style={{ fontSize: 11, marginTop: 6, color: resetMsg[u.id].ok ? "#00c875" : "#e2445c" }}>{resetMsg[u.id].text}</div>
+                    )}
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <RoleBadge role={u.role} />
@@ -3150,6 +3180,10 @@ function AdminPanel({ users, onUpdateRole, onCreateUser, onDeleteUser, onClose, 
                       <option value="admin">👑 Administrador</option>
                       <option value="collaborator">👤 Colaborador</option>
                     </select>
+                    <button onClick={() => { setResetFor(resetFor === u.id ? null : u.id); setResetPass(""); setResetMsg(m => ({ ...m, [u.id]: null })); }} title="Definir senha nova"
+                      style={{ background: resetFor === u.id ? "rgba(108,92,231,.15)" : "transparent", border: "1px solid #6c5ce740", color: "#6c5ce7", padding: "4px 8px", borderRadius: 6, cursor: "pointer", fontSize: 11 }}>
+                      🔑
+                    </button>
                     {u.id !== currentUserId && !(isLastAdmin && u.role === "admin") && (
                       <button onClick={() => handleDelete(u)} title="Excluir usuário"
                         style={{ background: "transparent", border: "1px solid #e2445c40", color: "#e2445c", padding: "4px 8px", borderRadius: 6, cursor: "pointer", fontSize: 11 }}
@@ -3425,6 +3459,7 @@ function ProfileEditor({ userData, onSave, onClose, allUsers }) {
 // ─── LOGIN SCREEN ────────────────────────────────────────────────────────────
 function LoginScreen({ onLogin }) {
   const [mode, setMode] = useState("login"); // "login" | "signup"
+  const [showForgot, setShowForgot] = useState(false);
   const [name, setName] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -3567,8 +3602,17 @@ function LoginScreen({ onLogin }) {
 
           {/* Forgot / spacer */}
           <div style={{ textAlign: "right", marginBottom: 22, marginTop: isSignup ? 12 : 0 }}>
-            {!isSignup && <span style={{ fontSize: 12, color: "#6c5ce7", cursor: "pointer", fontWeight: 500 }}>Esqueceu a senha?</span>}
+            {!isSignup && <span onClick={() => setShowForgot(f => !f)} style={{ fontSize: 12, color: "#6c5ce7", cursor: "pointer", fontWeight: 500 }}>Esqueceu a senha?</span>}
           </div>
+          {/* O servidor fica só na rede do escritório e não manda e-mail: quem
+              esqueceu pede ao administrador, que define uma senha nova no
+              Painel Admin (botão 🔑 ao lado da pessoa). */}
+          {!isSignup && showForgot && (
+            <div style={{ background: "rgba(108,92,231,.1)", border: "1px solid rgba(108,92,231,.3)", borderRadius: 10, padding: "10px 14px", marginTop: -12, marginBottom: 16, fontSize: 12, color: "#c8c3f5", lineHeight: 1.5 }}>
+              Peça a um administrador para definir uma senha nova para você no <b>Painel Admin</b>.
+              Depois, entre com ela e troque por uma sua no <b>Editar perfil</b>.
+            </div>
+          )}
 
           {/* Error */}
           {error && (
