@@ -1,9 +1,12 @@
-# Copia o backup diario do banco do Rotinas-Escritorio para o Google Drive.
+# Copia o banco do Rotinas-Escritorio para o Google Drive, tirado NA HORA.
 #
-# O proprio servidor ja grava, uma vez por dia, server\backups\database.<data>.sqlite
-# com a API de backup do SQLite (copia consistente mesmo com o banco aberto em
-# modo WAL -- copiar o database.sqlite direto daria um arquivo quase vazio).
-# Este script so leva o mais recente desses para o Drive e guarda $Manter dias.
+# Antes levava o server\backups\database.<data>.sqlite que o servidor grava ao
+# subir -- uma foto da manha, sem nada do que foi lancado no dia. Agora o
+# server\copia-banco.js tira a copia no momento em que esta tarefa roda, com a
+# API de backup do SQLite (consistente mesmo em modo WAL -- copiar o
+# database.sqlite direto daria um arquivo quase vazio) e confere antes de
+# entregar. O nome no Drive segue database.<data>.sqlite: a rodada mais recente
+# do dia substitui a anterior, e guardamos $Manter dias.
 #
 # Roda pela tarefa 'RotinasEscritorio-Backup-Drive' (instalar-backup-drive.ps1).
 # Log: autostart\backup-drive.log
@@ -25,12 +28,17 @@ try {
   $raiz = [System.IO.Path]::GetPathRoot($Destino)
   if ($raiz -and -not (Test-Path $raiz)) { Anotar "FALHA: unidade $raiz indisponivel (Google Drive fora do ar?). Nada gravado."; exit 1 }
 
-  $ultimo = Get-ChildItem $origem -Filter 'database.????-??-??.sqlite' | Sort-Object Name | Select-Object -Last 1
-  if (-not $ultimo) { Anotar "FALHA: nenhum database.<data>.sqlite em $origem (servidor ligado?)"; exit 1 }
+  $node = (Get-Command node.exe -ErrorAction SilentlyContinue).Source
+  if (-not $node) { $node = 'C:\Program Files\nodejs\node.exe' }
+  $nome  = 'database.{0:yyyy-MM-dd}.sqlite' -f (Get-Date)
+  $copia = Join-Path $origem $nome
+  $saida = & $node (Join-Path $aqui '..\server\copia-banco.js') $copia 2>&1
+  if ($LASTEXITCODE -ne 0) { Anotar "FALHA: copia do banco nao saiu: $saida"; exit 1 }
+  $ultimo = Get-Item $copia
 
   if (-not (Test-Path $Destino)) { New-Item -ItemType Directory -Path $Destino | Out-Null }
   Copy-Item $ultimo.FullName (Join-Path $Destino $ultimo.Name) -Force
-  Anotar ("ok  {0} ({1:N0} KB) -> {2}" -f $ultimo.Name, ($ultimo.Length / 1KB), $Destino)
+  Anotar ("ok  {0} ({1:N0} KB, tirado na hora: {2}) -> {3}" -f $ultimo.Name, ($ultimo.Length / 1KB), $saida, $Destino)
 
   $antigos = Get-ChildItem $Destino -Filter 'database.????-??-??.sqlite' | Sort-Object Name
   if ($antigos.Count -gt $Manter) {

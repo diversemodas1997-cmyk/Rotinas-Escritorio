@@ -738,7 +738,7 @@ function runDailyBackup() {
     const promise = db.backup(dest);
     Promise.resolve(promise).then(() => {
       db.prepare("INSERT OR REPLACE INTO settings (key,value) VALUES ('last_backup_date',?)").run(today);
-      const files = fs.readdirSync(BACKUP_DIR).filter(f => f.startsWith('database.') && f.endsWith('.sqlite')).sort();
+      const files = fs.readdirSync(BACKUP_DIR).filter(f => /^database\.\d{4}-\d{2}-\d{2}\.sqlite$/.test(f)).sort();
       while (files.length > 7) {
         const old = files.shift();
         try { fs.unlinkSync(path.join(BACKUP_DIR, old)); } catch {}
