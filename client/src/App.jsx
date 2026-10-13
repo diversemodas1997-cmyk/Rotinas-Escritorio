@@ -2640,6 +2640,102 @@ function LockedOverlay({ message = "Recurso restrito a administradores" }) {
 }
 
 // ─── ADMIN PANEL ─────────────────────────────────────────────────────────────
+// Folha de impressão das quantidades registradas. Monta um HTML próprio (fundo
+// branco, A4) num iframe escondido e chama print() nele — assim o painel escuro
+// não vai para o papel e não depende de popup liberado no navegador.
+function printReportSheet(d, { periodLabel, boardName }) {
+  const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const fmtBR = s => { if (!s) return ""; const [y, m, dd] = s.split("-"); return `${dd}/${m}/${y}`; };
+  const num = v => (Math.round((Number(v) || 0) * 100) / 100).toLocaleString("pt-BR");
+  const faixa = d.start === d.end ? fmtBR(d.start) : `${fmtBR(d.start)} a ${fmtBR(d.end)}`;
+
+  // Agrupa por tarefa, mantendo a ordem de maior volume que o servidor já manda.
+  const grupos = [];
+  const porTarefa = {};
+  for (const x of d.perTask || []) {
+    if (!porTarefa[x.task_id]) { porTarefa[x.task_id] = { nome: x.task_name || x.task_id, itens: [], total: 0 }; grupos.push(porTarefa[x.task_id]); }
+    porTarefa[x.task_id].itens.push(x);
+    porTarefa[x.task_id].total += Number(x.value) || 0;
+  }
+
+  const tabelaTarefas = grupos.map(g => `
+    <tr class="grupo"><td colspan="3">${esc(g.nome)}</td><td class="n">${num(g.total)}</td></tr>
+    ${g.itens.map(x => `<tr><td></td><td>${esc(x.subitem_name || "—")}</td><td>${esc(x.column_name || x.column_id)}</td><td class="n">${num(x.value)}</td></tr>`).join("")}
+  `).join("");
+
+  const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Relatório ${esc(boardName || "")} ${esc(faixa)}</title>
+<style>
+  @page { size: A4; margin: 14mm; }
+  * { box-sizing: border-box; }
+  body { font-family: Arial, Helvetica, sans-serif; color: #111; font-size: 11pt; margin: 0; }
+  h1 { font-size: 16pt; margin: 0 0 2px; }
+  .sub { color: #555; font-size: 10pt; margin-bottom: 14px; }
+  .resumo { display: flex; gap: 10px; margin-bottom: 16px; }
+  .resumo div { flex: 1; border: 1px solid #999; border-radius: 4px; padding: 8px 10px; }
+  .resumo b { display: block; font-size: 18pt; }
+  .resumo span { font-size: 8pt; color: #555; text-transform: uppercase; letter-spacing: .03em; }
+  h2 { font-size: 11pt; text-transform: uppercase; margin: 18px 0 6px; border-bottom: 2px solid #111; padding-bottom: 3px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { padding: 4px 6px; border-bottom: 1px solid #ccc; text-align: left; vertical-align: top; }
+  th { font-size: 9pt; text-transform: uppercase; color: #444; border-bottom: 1px solid #111; }
+  .n { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  tr.grupo td { font-weight: bold; background: #eee; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  tfoot td { font-weight: bold; border-top: 2px solid #111; border-bottom: none; }
+  tr { page-break-inside: avoid; }
+  .nota { font-size: 8pt; color: #666; margin-top: 4px; }
+  .rodape { margin-top: 28px; font-size: 8pt; color: #777; display: flex; justify-content: space-between; }
+  .assin { margin-top: 40px; display: flex; gap: 40px; }
+  .assin div { flex: 1; border-top: 1px solid #111; padding-top: 4px; font-size: 9pt; text-align: center; }
+</style></head><body>
+  <h1>Relatório de quantidades${boardName ? ` — ${esc(boardName)}` : ""}</h1>
+  <div class="sub">${esc(periodLabel)}: ${esc(faixa)}</div>
+
+  <div class="resumo">
+    <div><span>Total no período</span><b>${num(d.total)}</b></div>
+    <div><span>Dias com atividade</span><b>${(d.byDay || []).filter(x => x.value > 0).length}</b></div>
+    <div><span>Responsáveis</span><b>${(d.perUser || []).length}</b></div>
+  </div>
+
+  ${(d.perTask || []).length ? `
+  <h2>Por tarefa / subitem / coluna</h2>
+  <table>
+    <thead><tr><th>Tarefa</th><th>Subitem</th><th>Coluna</th><th class="n">Qtd.</th></tr></thead>
+    <tbody>${tabelaTarefas}</tbody>
+    <tfoot><tr><td colspan="3">Total geral</td><td class="n">${num(d.total)}</td></tr></tfoot>
+  </table>` : `<p>Sem quantidades registradas neste período.</p>`}
+
+  ${(d.byDay || []).length > 1 ? `
+  <h2>Por dia</h2>
+  <table>
+    <thead><tr><th>Data</th><th class="n">Qtd.</th></tr></thead>
+    <tbody>${d.byDay.map(x => `<tr><td>${fmtBR(x.date)}</td><td class="n">${num(x.value)}</td></tr>`).join("")}</tbody>
+  </table>` : ""}
+
+  ${(d.perUser || []).length ? `
+  <h2>Por responsável</h2>
+  <table>
+    <thead><tr><th>Responsável</th><th class="n">Qtd.</th></tr></thead>
+    <tbody>${d.perUser.map(x => `<tr><td>${esc(x.name)}</td><td class="n">${num(x.value)}</td></tr>`).join("")}</tbody>
+  </table>
+  <div class="nota">Valor dividido igualmente quando há co-responsáveis.</div>` : ""}
+
+  <div class="assin"><div>Conferido por</div><div>Data</div></div>
+  <div class="rodape">
+    <span>${d.lastRolloverDate ? `Último fechamento: ${fmtBR(d.lastRolloverDate)}` : "Sem fechamentos ainda"}</span>
+    <span>Impresso em ${new Date().toLocaleString("pt-BR")}</span>
+  </div>
+</body></html>`;
+
+  const frame = document.createElement("iframe");
+  frame.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden";
+  document.body.appendChild(frame);
+  const doc = frame.contentWindow.document;
+  doc.open(); doc.write(html); doc.close();
+  // Remove o iframe só depois que a janela de impressão fechar.
+  frame.contentWindow.onafterprint = () => setTimeout(() => frame.remove(), 0);
+  setTimeout(() => { frame.contentWindow.focus(); frame.contentWindow.print(); }, 150);
+}
+
 function ReportsPanel({ onClose, fullscreen, onToggleFullscreen, boardId, boardName }) {
   const [period, setPeriod] = useState("day");
   const [date, setDate] = useState(() => {
@@ -2697,6 +2793,11 @@ function ReportsPanel({ onClose, fullscreen, onToggleFullscreen, boardId, boardN
               {d.lastRolloverDate ? `Último fechamento: ${fmtBR(d.lastRolloverDate)}` : "Sem fechamentos ainda"}
             </div>
           </div>
+          <button onClick={() => printReportSheet(d, { periodLabel: (periods.find(p => p.key === period) || {}).label, boardName: boardName || d.boardName })}
+            disabled={loading || d.error} title="Imprimir folha de relatório das quantidades"
+            style={{ background: "none", border: "1px solid #3a3d45", color: loading || d.error ? "#556" : "#a5b1c2", fontSize: 12, cursor: loading || d.error ? "default" : "pointer", padding: "5px 10px", borderRadius: 6 }}>
+            🖨 Imprimir
+          </button>
           <button onClick={onToggleFullscreen} title={fullscreen ? "Reduzir" : "Expandir"} style={{ background: "none", border: "1px solid #3a3d45", color: "#a5b1c2", fontSize: 12, cursor: "pointer", padding: "5px 10px", borderRadius: 6 }}>
             {fullscreen ? "⤡ Reduzir" : "⤢ Tela cheia"}
           </button>
