@@ -2688,7 +2688,7 @@ function printReportSheet(d, { periodLabel, boardName }) {
   .assin div { flex: 1; border-top: 1px solid #111; padding-top: 4px; font-size: 9pt; text-align: center; }
 </style></head><body>
   <h1>Relatório de quantidades${boardName ? ` — ${esc(boardName)}` : ""}</h1>
-  <div class="sub">${esc(periodLabel)}: ${esc(faixa)}</div>
+  <div class="sub">${esc(periodLabel)}: ${esc(faixa)}${d.includesToday ? " — inclui hoje, parcial (o dia ainda não fechou)" : ""}</div>
 
   <div class="resumo">
     <div><span>Total no período</span><b>${num(d.total)}</b></div>
@@ -2818,6 +2818,9 @@ function ReportsPanel({ onClose, fullscreen, onToggleFullscreen, boardId, boardN
             style={{ background: "#13151a", border: "1px solid #2a2d35", color: "#e8eaed", padding: "6px 10px", borderRadius: 7, fontSize: 12 }} />
           {d.start && d.end && d.start !== d.end && (
             <span style={{ fontSize: 11, color: "#778ca3" }}>{fmtBR(d.start)} → {fmtBR(d.end)}</span>
+          )}
+          {d.includesToday && (
+            <span title="Os números de hoje são os que estão no quadro agora; o dia fecha à meia-noite." style={{ fontSize: 11, color: "#fdab3d", fontWeight: 600 }}>● Hoje ao vivo (parcial)</span>
           )}
         </div>
 

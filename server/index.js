@@ -508,6 +508,41 @@ function applyAutoTimes({ kind, boardId, taskId, prevStatus, nextStatus, prevCus
   return changed ? JSON.stringify(nextObj) : null;
 }
 
+// Linhas no formato de daily_snapshots com os valores que estão no quadro agora.
+// O rollover grava estas linhas ao fechar o dia; o relatório usa as mesmas para
+// mostrar o dia de hoje ao vivo, antes do fechamento.
+function liveSnapshotRows(date) {
+  const numericSubCols = db.prepare(
+    "SELECT id, name, task_id FROM columns_config WHERE scope='subitem' AND type='number' AND (computed IS NULL OR computed='')"
+  ).all();
+  const tasks = db.prepare('SELECT id, name, total_orders, total_cancellations, responsible, board_id FROM tasks').all();
+  const taskById = new Map(tasks.map(t => [t.id, t]));
+  const rows = [];
+  const push = (task_id, subitem_id, column_id, value, responsible, task_name, subitem_name, column_name, board_id) =>
+    rows.push({ date, task_id, subitem_id, column_id, value, responsible, task_name, subitem_name, column_name, board_id });
+  for (const s of db.prepare('SELECT id, task_id, name, total, custom, responsible FROM subitems').all()) {
+    const t = taskById.get(s.task_id);
+    const taskName = t?.name || '';
+    const boardId = t?.board_id || null;
+    const resp = s.responsible || '[]';
+    let custom = {};
+    try { custom = JSON.parse(s.custom || '{}'); } catch {}
+    if (s.total && Number(s.total) !== 0) push(s.task_id, s.id, '__total__', Number(s.total), resp, taskName, s.name, 'TOTAL', boardId);
+    for (const col of numericSubCols) {
+      // Per-task scoped columns only snapshot for their own task
+      if (col.task_id && col.task_id !== s.task_id) continue;
+      const v = custom[col.id];
+      const num = typeof v === 'number' ? v : (v != null && v !== '' ? Number(v) : 0);
+      if (num && !Number.isNaN(num)) push(s.task_id, s.id, col.id, num, resp, taskName, s.name, col.name, boardId);
+    }
+  }
+  for (const t of tasks) {
+    if (t.total_orders && Number(t.total_orders) !== 0) push(t.id, '', 'totalOrders', Number(t.total_orders), t.responsible || '[]', t.name, '', 'Pedidos', t.board_id || null);
+    if (t.total_cancellations && Number(t.total_cancellations) !== 0) push(t.id, '', 'totalCancellations', Number(t.total_cancellations), t.responsible || '[]', t.name, '', 'Canc.', t.board_id || null);
+  }
+  return rows;
+}
+
 function runDailyRollover() {
   const today = brtDateString();
   const row = db.prepare("SELECT value FROM settings WHERE key='last_rollover_date'").get();
@@ -528,9 +563,8 @@ function runDailyRollover() {
   // da tarefa — num quadro de rotina diária a função pararia de funcionar no dia
   // seguinte. Os valores não vão para daily_snapshots: a tabela guarda REAL.
   const autoTimeColIds = db.prepare("SELECT id FROM columns_config WHERE auto_time IN ('start','end')").all().map(c => c.id);
-  const tasks = db.prepare('SELECT id, name, total_orders, total_cancellations, responsible, custom, board_id FROM tasks').all();
-  const taskById = new Map(tasks.map(t => [t.id, t]));
-  const subitems = db.prepare('SELECT id, task_id, name, total, custom, responsible FROM subitems').all();
+  const tasks = db.prepare('SELECT id, total_orders, total_cancellations, custom FROM tasks').all();
+  const subitems = db.prepare('SELECT id, task_id, total, custom FROM subitems').all();
 
   const insSnap = db.prepare(
     `INSERT OR REPLACE INTO daily_snapshots
@@ -542,27 +576,17 @@ function runDailyRollover() {
   const updTaskCustom = db.prepare('UPDATE tasks SET custom=? WHERE id=?');
 
   const tx = db.transaction(() => {
-    // Snapshot + zero subitem numeric columns
+    for (const r of liveSnapshotRows(last)) {
+      insSnap.run(r.date, r.task_id, r.subitem_id, r.column_id, r.value, r.responsible, r.task_name, r.subitem_name, r.column_name, r.board_id);
+    }
+    // Zero subitem numeric columns
     for (const s of subitems) {
-      const t = taskById.get(s.task_id);
-      const taskName = t?.name || '';
-      const boardId = t?.board_id || null;
-      const resp = s.responsible || '[]';
       let custom = {};
       try { custom = JSON.parse(s.custom || '{}'); } catch {}
-      // Built-in `total` field
-      if (s.total && Number(s.total) !== 0) {
-        insSnap.run(last, s.task_id, s.id, '__total__', Number(s.total), resp, taskName, s.name, 'TOTAL', boardId);
-      }
       let customChanged = false;
       for (const col of numericSubCols) {
         // Per-task scoped columns only snapshot for their own task
         if (col.task_id && col.task_id !== s.task_id) continue;
-        const v = custom[col.id];
-        const num = typeof v === 'number' ? v : (v != null && v !== '' ? Number(v) : 0);
-        if (num && !Number.isNaN(num)) {
-          insSnap.run(last, s.task_id, s.id, col.id, num, resp, taskName, s.name, col.name, boardId);
-        }
         if (col.id in custom) { delete custom[col.id]; customChanged = true; }
       }
       // Horários automáticos voltam a ficar vazios para o dia novo.
@@ -573,7 +597,7 @@ function runDailyRollover() {
         updSub.run(JSON.stringify(custom), s.id);
       }
     }
-    // Snapshot + zero task totals
+    // Zero task totals
     for (const t of tasks) {
       if (autoTimeColIds.length > 0) {
         let custom = {};
@@ -583,12 +607,6 @@ function runDailyRollover() {
           if (colId in custom) { delete custom[colId]; changed = true; }
         }
         if (changed) updTaskCustom.run(JSON.stringify(custom), t.id);
-      }
-      if (t.total_orders && Number(t.total_orders) !== 0) {
-        insSnap.run(last, t.id, '', 'totalOrders', Number(t.total_orders), t.responsible || '[]', t.name, '', 'Pedidos', t.board_id || null);
-      }
-      if (t.total_cancellations && Number(t.total_cancellations) !== 0) {
-        insSnap.run(last, t.id, '', 'totalCancellations', Number(t.total_cancellations), t.responsible || '[]', t.name, '', 'Canc.', t.board_id || null);
       }
       if ((t.total_orders && Number(t.total_orders) !== 0) || (t.total_cancellations && Number(t.total_cancellations) !== 0)) {
         updTask.run(t.id);
@@ -1522,6 +1540,14 @@ app.get('/api/reports', auth, adminOnly, (req, res) => {
   const rows = boardId
     ? db.prepare('SELECT * FROM daily_snapshots WHERE date >= ? AND date <= ? AND board_id = ? ORDER BY date, task_id, subitem_id, column_id').all(start, end, boardId)
     : db.prepare('SELECT * FROM daily_snapshots WHERE date >= ? AND date <= ? ORDER BY date, task_id, subitem_id, column_id').all(start, end);
+  // O dia de hoje só vira snapshot à meia-noite. Sem isto, o que a equipe lança
+  // hoje não aparecia em relatório nenhum até amanhã — e o que se via eram só os
+  // dias fechados, de antes do registro de autoria.
+  const today = brtDateString();
+  const includesToday = start <= today && today <= end;
+  if (includesToday) {
+    for (const r of liveSnapshotRows(today)) if (!boardId || r.board_id === boardId) rows.push(r);
+  }
 
   const authorRows = db.prepare(
     'SELECT date, task_id, subitem_id, column_id, user_name, SUM(delta) AS v FROM number_entries WHERE date >= ? AND date <= ? GROUP BY date, task_id, subitem_id, column_id, user_name'
@@ -1564,6 +1590,7 @@ app.get('/api/reports', auth, adminOnly, (req, res) => {
     byDay: Object.entries(byDay).map(([date,value]) => ({ date, value })).sort((a,b) => a.date.localeCompare(b.date)),
     perUser: Object.entries(perUser).map(([name,value]) => ({ name, value: Math.round(value*100)/100 })).sort((a,b) => b.value - a.value),
     perTask: Object.values(perTask).sort((a,b) => b.value - a.value),
+    includesToday,
     lastRolloverDate: db.prepare("SELECT value FROM settings WHERE key='last_rollover_date'").get()?.value || null
   });
 });
