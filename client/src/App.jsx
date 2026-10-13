@@ -2693,7 +2693,7 @@ function printReportSheet(d, { periodLabel, boardName }) {
   <div class="resumo">
     <div><span>Total no período</span><b>${num(d.total)}</b></div>
     <div><span>Dias com atividade</span><b>${(d.byDay || []).filter(x => x.value > 0).length}</b></div>
-    <div><span>Responsáveis</span><b>${(d.perUser || []).length}</b></div>
+    <div><span>Responsáveis</span><b>${(d.perUser || []).filter(x => !x.name.startsWith("—")).length}</b></div>
   </div>
 
   ${(d.perTask || []).length ? `
@@ -2712,12 +2712,12 @@ function printReportSheet(d, { periodLabel, boardName }) {
   </table>` : ""}
 
   ${(d.perUser || []).length ? `
-  <h2>Por responsável</h2>
+  <h2>Por responsável (quem lançou)</h2>
   <table>
     <thead><tr><th>Responsável</th><th class="n">Qtd.</th></tr></thead>
     <tbody>${d.perUser.map(x => `<tr><td>${esc(x.name)}</td><td class="n">${num(x.value)}</td></tr>`).join("")}</tbody>
   </table>
-  <div class="nota">Valor dividido igualmente quando há co-responsáveis.</div>` : ""}
+  <div class="nota">Cada pessoa fica com o que ela mesma digitou. "Autor não registrado" são valores lançados antes de 13/10/2026, quando a autoria passou a ser gravada.</div>` : ""}
 
   <div class="assin"><div>Conferido por</div><div>Data</div></div>
   <div class="rodape">
@@ -2839,7 +2839,7 @@ function ReportsPanel({ onClose, fullscreen, onToggleFullscreen, boardId, boardN
                 </div>
                 <div>
                   <div style={{ fontSize: 11, color: "#778ca3", fontWeight: 600 }}>RESPONSÁVEIS</div>
-                  <div style={{ fontSize: 28, fontWeight: 800, color: "#fdab3d" }}>{(d.perUser || []).length}</div>
+                  <div style={{ fontSize: 28, fontWeight: 800, color: "#fdab3d" }}>{(d.perUser || []).filter(x => !x.name.startsWith("—")).length}</div>
                 </div>
               </div>
 
@@ -2864,7 +2864,7 @@ function ReportsPanel({ onClose, fullscreen, onToggleFullscreen, boardId, boardN
               {/* Per user */}
               {(d.perUser || []).length > 0 && (
                 <div>
-                  <div style={{ fontSize: 12, fontWeight: 700, color: "#e8eaed", marginBottom: 8 }}>DESEMPENHO POR RESPONSÁVEL</div>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "#e8eaed", marginBottom: 8 }}>DESEMPENHO POR RESPONSÁVEL (QUEM LANÇOU)</div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                     {d.perUser.map(x => (
                       <div key={x.name} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12 }}>
@@ -2876,7 +2876,7 @@ function ReportsPanel({ onClose, fullscreen, onToggleFullscreen, boardId, boardN
                       </div>
                     ))}
                   </div>
-                  <div style={{ fontSize: 10, color: "#556", marginTop: 6 }}>Valor dividido igualmente quando há co-responsáveis.</div>
+                  <div style={{ fontSize: 10, color: "#556", marginTop: 6 }}>Cada pessoa fica com o que ela mesma digitou. "Autor não registrado" são valores lançados antes de 13/10/2026, quando a autoria passou a ser gravada.</div>
                 </div>
               )}
 

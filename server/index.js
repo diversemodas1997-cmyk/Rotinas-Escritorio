@@ -175,6 +175,21 @@ db.exec(`
   }
 })();
 
+// Quem lançou cada número. O relatório "por responsável" dividia o valor da
+// célula igualmente entre os responsáveis do subitem — como quase todo subitem
+// tem as mesmas pessoas, todo mundo saía com o mesmo número. Agora cada edição
+// guarda a diferença (novo − antigo) em nome de quem digitou, no dia em que
+// digitou, com as mesmas chaves do daily_snapshots (column_id '__total__' etc.).
+db.exec(`
+  CREATE TABLE IF NOT EXISTS number_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL,
+    task_id TEXT NOT NULL, subitem_id TEXT NOT NULL DEFAULT '', column_id TEXT NOT NULL,
+    user_name TEXT NOT NULL, delta REAL NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX IF NOT EXISTS idx_number_entries_cell ON number_entries (date, task_id, subitem_id, column_id);
+`);
+
 // Quadro restrito: só quem está na lista de acesso enxerga, mesmo que seja
 // responsável por alguma tarefa dele. Padrão 0 = mantém o comportamento antigo.
 (function migrateBoardRestricted() {
@@ -583,6 +598,39 @@ function runDailyRollover() {
   });
   tx();
   console.log(`🗓️  Rollover: snapshot de ${last} gravado, valores zerados para ${today}`);
+}
+
+// ===== Autoria dos números (alimenta o "por responsável" do relatório) =====
+const toNum = v => { const n = typeof v === 'number' ? v : (v != null && v !== '' ? Number(v) : 0); return Number.isFinite(n) ? n : 0; };
+const parseObj = s => { try { return typeof s === 'string' ? JSON.parse(s || '{}') : (s || {}); } catch { return {}; } };
+const insNumberEntry = db.prepare('INSERT INTO number_entries (date, task_id, subitem_id, column_id, user_name, delta) VALUES (?, ?, ?, ?, ?, ?)');
+// Nome atual do usuário (o do token pode estar velho se o nome foi editado).
+function authorName(req) {
+  return db.prepare('SELECT name FROM users WHERE id=?').get(req.user.id)?.name || req.user.name || '—';
+}
+// Registra só as células que o rollover fotografa, para a soma das diferenças
+// de um dia bater com o valor guardado em daily_snapshots.
+function recordSubitemNumbers(req, taskId, subitemId, prev, next) {
+  const date = brtDateString();
+  const who = authorName(req);
+  const d = toNum(next.total) - toNum(prev.total);
+  if (d) insNumberEntry.run(date, taskId, subitemId, '__total__', who, d);
+  const pc = parseObj(prev.custom), nc = parseObj(next.custom);
+  const cols = db.prepare(
+    "SELECT id FROM columns_config WHERE scope='subitem' AND type='number' AND (computed IS NULL OR computed='') AND (task_id IS NULL OR task_id='' OR task_id=?)"
+  ).all(taskId);
+  for (const c of cols) {
+    const dc = toNum(nc[c.id]) - toNum(pc[c.id]);
+    if (dc) insNumberEntry.run(date, taskId, subitemId, c.id, who, dc);
+  }
+}
+function recordTaskNumbers(req, taskId, prev, next) {
+  const date = brtDateString();
+  const who = authorName(req);
+  const dO = toNum(next.total_orders) - toNum(prev.total_orders);
+  if (dO) insNumberEntry.run(date, taskId, '', 'totalOrders', who, dO);
+  const dC = toNum(next.total_cancellations) - toNum(prev.total_cancellations);
+  if (dC) insNumberEntry.run(date, taskId, '', 'totalCancellations', who, dC);
 }
 
 // Run once on boot and before each authenticated request.
@@ -1161,6 +1209,9 @@ app.post('/api/tasks',auth,(req,res)=>{
 });
 app.put('/api/tasks/:id',auth,(req,res)=>{
   const { name, status, priority, responsible, totalOrders, totalCancellations, custom } = req.body;
+  // Vira o dia antes de comparar: uma edição logo após a meia-noite precisa
+  // partir do valor já zerado, senão a diferença cai no dia errado.
+  try { runDailyRollover(); } catch {}
   const t = db.prepare('SELECT * FROM tasks WHERE id=?').get(req.params.id);
   if (!t) return res.status(404).json({ error: 'Não encontrada' });
   const nextStatus = status ?? t.status;
@@ -1174,6 +1225,7 @@ app.put('/api/tasks/:id',auth,(req,res)=>{
   // Parent deadline is auto-managed by runDailyRollover; client value is ignored.
   db.prepare('UPDATE tasks SET name=?,status=?,priority=?,responsible=?,total_orders=?,total_cancellations=?,custom=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
     .run(name ?? t.name, nextStatus, priority ?? t.priority, responsible ? JSON.stringify(responsible) : t.responsible, totalOrders ?? t.total_orders, totalCancellations ?? t.total_cancellations, nextCustom, req.params.id);
+  recordTaskNumbers(req, t.id, t, { total_orders: totalOrders ?? t.total_orders, total_cancellations: totalCancellations ?? t.total_cancellations });
   // Devolve o custom para o cliente mostrar o horário na hora, sem esperar o poll.
   let out = {}; try { out = JSON.parse(nextCustom || '{}'); } catch {}
   res.json({ success: true, custom: out });
@@ -1197,6 +1249,7 @@ app.delete('/api/tasks/:id', auth, canManageTasks, (req, res) => {
 
 app.put('/api/subitems/:id',auth,(req,res)=>{
   const { name, owner, status, priority, responsible, total, deadline, custom } = req.body;
+  try { runDailyRollover(); } catch {}
   const s = db.prepare('SELECT * FROM subitems WHERE id=?').get(req.params.id);
   if (!s) return res.status(404).json({ error: 'Não encontrado' });
   const nextStatus = status ?? s.status;
@@ -1208,10 +1261,11 @@ app.put('/api/subitems/:id',auth,(req,res)=>{
   if (withTimes) nextCustom = withTimes;
   db.prepare('UPDATE subitems SET name=?,owner=?,status=?,priority=?,responsible=?,total=?,deadline=?,custom=?,updated_at=CURRENT_TIMESTAMP WHERE id=?')
     .run(name ?? s.name, owner ?? s.owner, nextStatus, priority ?? s.priority, responsible ? JSON.stringify(responsible) : s.responsible, total ?? s.total, deadline !== undefined ? deadline : s.deadline, nextCustom, req.params.id);
+  recordSubitemNumbers(req, s.task_id, s.id, s, { total: total ?? s.total, custom: nextCustom });
   let out = {}; try { out = JSON.parse(nextCustom || '{}'); } catch {}
   res.json({ success: true, custom: out });
 });
-app.post('/api/subitems',auth,(req,res)=>{const{id,task_id,name,owner,status,priority,responsible,total,deadline,custom}=req.body;const m=db.prepare('SELECT MAX(sort_order) as m FROM subitems WHERE task_id=?').get(task_id);db.prepare('INSERT INTO subitems (id,task_id,name,owner,status,priority,responsible,total,deadline,custom,sort_order,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)').run(id,task_id,name||'Novo subitem',owner||'',status||'Não iniciado',priority||'Média',JSON.stringify(responsible||[]),total||0,deadline||null,JSON.stringify(custom||{}),(m?.m||0)+1);res.json({success:true});});
+app.post('/api/subitems',auth,(req,res)=>{const{id,task_id,name,owner,status,priority,responsible,total,deadline,custom}=req.body;const m=db.prepare('SELECT MAX(sort_order) as m FROM subitems WHERE task_id=?').get(task_id);db.prepare('INSERT INTO subitems (id,task_id,name,owner,status,priority,responsible,total,deadline,custom,sort_order,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)').run(id,task_id,name||'Novo subitem',owner||'',status||'Não iniciado',priority||'Média',JSON.stringify(responsible||[]),total||0,deadline||null,JSON.stringify(custom||{}),(m?.m||0)+1);recordSubitemNumbers(req,task_id,id,{},{total,custom});res.json({success:true});});
 
 app.post('/api/updates',auth,(req,res)=>{const{id,targetType,targetId,text,mentions,files}=req.body;db.prepare('INSERT INTO updates (id,target_type,target_id,author,text,mentions,files) VALUES(?,?,?,?,?,?,?)').run(id,targetType,targetId,req.user.name,text||'',JSON.stringify(mentions||[]),JSON.stringify(files||[]));res.json({success:true});});
 app.delete('/api/updates/:id',auth,(req,res)=>{const u=db.prepare('SELECT author FROM updates WHERE id=?').get(req.params.id);if(!u)return res.status(404).json({error:'Relatório não encontrado'});if(u.author!==req.user.name&&req.user.role!=='admin')return res.status(403).json({error:'Apenas o autor pode excluir'});db.prepare('DELETE FROM updates WHERE id=?').run(req.params.id);res.json({success:true});});
@@ -1469,6 +1523,17 @@ app.get('/api/reports', auth, adminOnly, (req, res) => {
     ? db.prepare('SELECT * FROM daily_snapshots WHERE date >= ? AND date <= ? AND board_id = ? ORDER BY date, task_id, subitem_id, column_id').all(start, end, boardId)
     : db.prepare('SELECT * FROM daily_snapshots WHERE date >= ? AND date <= ? ORDER BY date, task_id, subitem_id, column_id').all(start, end);
 
+  const authorRows = db.prepare(
+    'SELECT date, task_id, subitem_id, column_id, user_name, SUM(delta) AS v FROM number_entries WHERE date >= ? AND date <= ? GROUP BY date, task_id, subitem_id, column_id, user_name'
+  ).all(start, end);
+  const authorsByCell = new Map();
+  for (const a of authorRows) {
+    const k = a.date + '|' + a.task_id + '|' + a.subitem_id + '|' + a.column_id;
+    if (!authorsByCell.has(k)) authorsByCell.set(k, []);
+    authorsByCell.get(k).push([a.user_name, Number(a.v) || 0]);
+  }
+  const UNATTRIBUTED = '— Autor não registrado';
+
   const byDay = {};
   const perUser = {};
   const perTask = {};
@@ -1481,16 +1546,16 @@ app.get('/api/reports', auth, adminOnly, (req, res) => {
     const key = r.task_id + '|' + r.subitem_id + '|' + r.column_id;
     if (!perTask[key]) perTask[key] = { task_id: r.task_id, subitem_id: r.subitem_id, column_id: r.column_id, task_name: r.task_name, subitem_name: r.subitem_name, column_name: r.column_name, value: 0 };
     perTask[key].value += v;
-    let resp = [];
-    try { resp = JSON.parse(r.responsible || '[]'); } catch {}
-    if (!resp.length) {
-      perUser['— Sem responsável'] = (perUser['— Sem responsável'] || 0) + v;
-    } else {
-      // Divide equally among co-responsibles so totals don't double-count.
-      const share = v / resp.length;
-      for (const name of resp) perUser[name] = (perUser[name] || 0) + share;
-    }
+    // Cada usuário fica com o que ele mesmo lançou naquela célula naquele dia.
+    // O que sobra (valores digitados antes de existir o registro de autoria)
+    // aparece separado, em vez de ser rateado entre os responsáveis.
+    const contrib = authorsByCell.get(r.date + '|' + r.task_id + '|' + (r.subitem_id || '') + '|' + r.column_id);
+    let attributed = 0;
+    if (contrib) for (const [name, dv] of contrib) { perUser[name] = (perUser[name] || 0) + dv; attributed += dv; }
+    const rest = v - attributed;
+    if (Math.abs(rest) > 1e-9) perUser[UNATTRIBUTED] = (perUser[UNATTRIBUTED] || 0) + rest;
   }
+  for (const k of Object.keys(perUser)) if (Math.abs(perUser[k]) < 1e-9) delete perUser[k];
   res.json({
     period, date: ref, start, end,
     boardId,
