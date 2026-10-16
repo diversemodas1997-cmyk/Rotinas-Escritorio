@@ -1686,6 +1686,14 @@ app.get('/api/reports', auth, adminOnly, (req, res) => {
     }
   }
   for (const k of Object.keys(perUser)) if (Math.abs(perUser[k]) < 1e-9) delete perUser[k];
+  // Semana e mês listam todos os dias do período, inclusive os sem lançamento —
+  // senão a semana aparecia só com os dias que tiveram número (ex.: 15 e 16).
+  if (period === 'week' || period === 'month') {
+    for (const dt = new Date(start + 'T00:00:00Z'); dt.toISOString().slice(0,10) <= end; dt.setUTCDate(dt.getUTCDate() + 1)) {
+      const k = dt.toISOString().slice(0,10);
+      if (!(k in byDay)) byDay[k] = 0;
+    }
+  }
   res.json({
     period, date: ref, start, end,
     boardId,
@@ -1694,7 +1702,7 @@ app.get('/api/reports', auth, adminOnly, (req, res) => {
     byDay: Object.entries(byDay).map(([date,value]) => ({ date, value })).sort((a,b) => a.date.localeCompare(b.date)),
     perUser: Object.entries(perUser).map(([name,value]) => ({ name, value: Math.round(value*100)/100 })).sort((a,b) => b.value - a.value),
     perTask: Object.values(perTask).sort((a,b) => b.value - a.value),
-    includesToday,
+    includesToday, today,
     lastRolloverDate: db.prepare("SELECT value FROM settings WHERE key='last_rollover_date'").get()?.value || null
   });
 });

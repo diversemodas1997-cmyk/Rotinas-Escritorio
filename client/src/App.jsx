@@ -2645,11 +2645,16 @@ function LockedOverlay({ message = "Recurso restrito a administradores" }) {
 // Folha de impressão das quantidades registradas. Monta um HTML próprio (fundo
 // branco, A4) num iframe escondido e chama print() nele — assim o painel escuro
 // não vai para o papel e não depende de popup liberado no navegador.
+// "2026-10-15" → "Qui". Datas são dias de calendário, então lê em UTC para não
+// escorregar um dia pelo fuso.
+const WEEKDAYS_BR = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
+const weekdayBR = s => s ? WEEKDAYS_BR[new Date(s + "T00:00:00Z").getUTCDay()] : "";
+
 function printReportSheet(d, { periodLabel, boardName }) {
   const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const fmtBR = s => { if (!s) return ""; const [y, m, dd] = s.split("-"); return `${dd}/${m}/${y}`; };
   const num = v => (Math.round((Number(v) || 0) * 100) / 100).toLocaleString("pt-BR");
-  const faixa = d.start === d.end ? fmtBR(d.start) : `${fmtBR(d.start)} a ${fmtBR(d.end)}`;
+  const faixa = d.start === d.end ? `${weekdayBR(d.start)} ${fmtBR(d.start)}` : `${weekdayBR(d.start)} ${fmtBR(d.start)} a ${weekdayBR(d.end)} ${fmtBR(d.end)}`;
 
   // Agrupa por tarefa, mantendo a ordem de maior volume que o servidor já manda.
   const grupos = [];
@@ -2710,7 +2715,7 @@ function printReportSheet(d, { periodLabel, boardName }) {
   <h2>Por dia</h2>
   <table>
     <thead><tr><th>Data</th><th class="n">Qtd.</th></tr></thead>
-    <tbody>${d.byDay.map(x => `<tr><td>${fmtBR(x.date)}</td><td class="n">${num(x.value)}</td></tr>`).join("")}</tbody>
+    <tbody>${d.byDay.map(x => `<tr><td>${weekdayBR(x.date)} ${fmtBR(x.date)}</td><td class="n">${d.today && x.date > d.today ? "" : num(x.value)}</td></tr>`).join("")}</tbody>
   </table>` : ""}
 
   ${(d.perUser || []).length ? `
@@ -2819,7 +2824,9 @@ function ReportsPanel({ onClose, fullscreen, onToggleFullscreen, boardId, boardN
           <input type="date" value={date} onChange={e => setDate(e.target.value)}
             style={{ background: "#13151a", border: "1px solid #2a2d35", color: "#e8eaed", padding: "6px 10px", borderRadius: 7, fontSize: 12 }} />
           {d.start && d.end && d.start !== d.end && (
-            <span style={{ fontSize: 11, color: "#778ca3" }}>{fmtBR(d.start)} → {fmtBR(d.end)}</span>
+            <span style={{ fontSize: 12, color: "#e8eaed", fontWeight: 600 }}>
+              {weekdayBR(d.start)} {fmtBR(d.start)} a {weekdayBR(d.end)} {fmtBR(d.end)}
+            </span>
           )}
           {d.includesToday && (
             <span title="Os números de hoje são os que estão no quadro agora; o dia fecha à meia-noite." style={{ fontSize: 11, color: "#fdab3d", fontWeight: 600 }}>● Hoje ao vivo (parcial)</span>
@@ -2853,15 +2860,22 @@ function ReportsPanel({ onClose, fullscreen, onToggleFullscreen, boardId, boardN
                 <div>
                   <div style={{ fontSize: 12, fontWeight: 700, color: "#e8eaed", marginBottom: 8 }}>POR DIA</div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                    {d.byDay.map(x => (
-                      <div key={x.date} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12 }}>
-                        <div style={{ width: 80, color: "#a5b1c2" }}>{fmtBR(x.date)}</div>
-                        <div style={{ flex: 1, background: "#13151a", height: 16, borderRadius: 4, overflow: "hidden" }}>
-                          <div style={{ width: `${(x.value / maxDay) * 100}%`, height: "100%", background: "linear-gradient(90deg, #00c875, #579bfc)" }} />
+                    {d.byDay.map(x => {
+                      // Dia que ainda não chegou fica apagado e sem número.
+                      const futuro = d.today && x.date > d.today;
+                      const hoje = x.date === d.today;
+                      return (
+                        <div key={x.date} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12, opacity: futuro ? 0.4 : 1 }}>
+                          <div style={{ width: 92, color: hoje ? "#fdab3d" : "#a5b1c2", fontWeight: hoje ? 700 : 400, whiteSpace: "nowrap" }}>
+                            <span style={{ display: "inline-block", width: 28 }}>{weekdayBR(x.date)}</span>{fmtBR(x.date).slice(0, 5)}
+                          </div>
+                          <div style={{ flex: 1, background: "#13151a", height: 16, borderRadius: 4, overflow: "hidden" }}>
+                            <div style={{ width: `${(x.value / maxDay) * 100}%`, height: "100%", background: "linear-gradient(90deg, #00c875, #579bfc)" }} />
+                          </div>
+                          <div style={{ width: 60, textAlign: "right", color: x.value ? "#e8eaed" : "#556", fontWeight: 600 }}>{futuro ? "" : Math.round(x.value * 100) / 100}</div>
                         </div>
-                        <div style={{ width: 60, textAlign: "right", color: "#e8eaed", fontWeight: 600 }}>{Math.round(x.value * 100) / 100}</div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               )}
