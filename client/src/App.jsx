@@ -5403,8 +5403,8 @@ function Dashboard({ currentUser, onLogout }) {
           {showNotifs && <NotificationPanel tasks={tasks} currentUser={currentUser.name} onClose={() => setShowNotifs(false)} onOpenUpdates={(tid, sid) => openUpdates(tid, sid)} soundEnabled={notifSoundEnabled} onToggleSound={() => setNotifSoundEnabled(v => !v)} popupEnabled={notifPopupActive} onTogglePopup={toggleNotifPopup} popupSupported={notifPopupSupported} popupBlocked={notifPermission === "denied"} />}
         </div>
 
-        {isAdmin && (
-          <div onClick={() => setShowReports(true)} title="Relatório diário" style={{ cursor: "pointer", width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 8, background: showReports ? "rgba(0,200,117,.15)" : "transparent", transition: "background .15s" }}
+        {currentBoardId && (
+          <div onClick={() => setShowReports(true)} title="Relatório por canal" style={{ cursor: "pointer", width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 8, background: showReports ? "rgba(0,200,117,.15)" : "transparent", transition: "background .15s" }}
             onMouseEnter={e => e.currentTarget.style.background = "rgba(0,200,117,.1)"} onMouseLeave={e => { if (!showReports) e.currentTarget.style.background = "transparent"; }}>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={showReports ? "#00c875" : "#778ca3"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M3 3v18h18"/><path d="M7 14l3-3 4 4 5-6"/>
@@ -5620,7 +5620,7 @@ function Dashboard({ currentUser, onLogout }) {
       }} onClose={() => setUpdatesTarget(null)} allPeople={allPeople} />}
       {showDrive && <GoogleDrivePanel onClose={() => setShowDrive(false)} />}
       {showAdminPanel && isAdmin && <AdminPanel users={users} onUpdateRole={apiUpdateUserRole} onCreateUser={apiCreateUser} onDeleteUser={apiDeleteUser} onClose={() => setShowAdminPanel(false)} currentUser={currentUser.name} currentUserId={currentUser.id} />}
-      {showReports && isAdmin && <ReportsPanel fullscreen={reportsFullscreen} onToggleFullscreen={() => setReportsFullscreen(f => !f)} onClose={() => { setShowReports(false); setReportsFullscreen(false); }} boardId={currentBoardId} boardName={(boards.find(b => b.id === currentBoardId) || {}).name} />}
+      {showReports && currentBoardId && <ReportsPanel fullscreen={reportsFullscreen} onToggleFullscreen={() => setReportsFullscreen(f => !f)} onClose={() => { setShowReports(false); setReportsFullscreen(false); }} boardId={currentBoardId} boardName={(boards.find(b => b.id === currentBoardId) || {}).name} />}
       {showProfile && <ProfileEditor userData={currentUserData} onSave={apiUpdateUserProfile} onClose={() => { setShowProfile(false); setProfileTab("info"); }} allUsers={users} initialTab={profileTab} onRecoverySaved={() => setNeedsRecovery(false)} />}
       {needsRecovery && !recoveryNagHidden && !showProfile && (
         <div style={{ position: "fixed", left: 16, bottom: 16, zIndex: 90, maxWidth: 360, background: "#1a1d23", border: "1px solid #fdab3d66", borderRadius: 12, padding: "12px 14px", boxShadow: "0 8px 30px rgba(0,0,0,.5)", fontSize: 12, color: "#c8ccd4", lineHeight: 1.5 }}>

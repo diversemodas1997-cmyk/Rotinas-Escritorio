@@ -1734,7 +1734,15 @@ app.get('/api/admin/gemini-health', auth, canManageAutomations, async (req, res)
 // ===== Daily snapshots report (admin only) =====
 // Returns snapshots for the given period, aggregated totals, and per-user performance.
 // Query params: period=day|week|month|year (default day), date=YYYY-MM-DD (default today BRT).
-app.get('/api/reports', auth, adminOnly, (req, res) => {
+// Todos os usuários veem o relatório; quem não é admin só o de um quadro a que
+// tem acesso (nada de consolidado de todos os quadros).
+app.get('/api/reports', auth, (req, res) => {
+  if (req.user.role !== 'admin') {
+    const bid = req.query.boardId;
+    if (!bid || !getAccessibleBoardIds(req.user.name, req.user.id).has(bid)) {
+      return res.status(403).json({ error: 'Sem acesso ao relatório deste quadro' });
+    }
+  }
   try { runDailyRollover(); } catch {}
   const period = ['day','week','month','year'].includes(req.query.period) ? req.query.period : 'day';
   const ref = /^\d{4}-\d{2}-\d{2}$/.test(req.query.date || '') ? req.query.date : brtDateString();
