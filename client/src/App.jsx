@@ -58,6 +58,21 @@ function hasInFlightMutations() { return _inFlightMutations > 0; }
 function setToken(t) { _token = t; if (t) localStorage.setItem("rotina_token", t); else localStorage.removeItem("rotina_token"); }
 function getToken() { return _token; }
 
+// Chaves de "aparelho conhecido" (recuperar a senha sem admin). Ficam no
+// navegador mesmo depois de sair, uma por usuário que já entrou aqui.
+const DEVICE_KEYS_STORAGE = "rotina_device_keys";
+function readDeviceKeys() {
+  try { const o = JSON.parse(localStorage.getItem(DEVICE_KEYS_STORAGE) || "{}"); return o && typeof o === "object" ? o : {}; } catch { return {}; }
+}
+function allDeviceKeys() { return Object.values(readDeviceKeys()).filter(k => typeof k === "string"); }
+async function ensureDeviceKey(userId) {
+  if (!userId || readDeviceKeys()[userId]) return;
+  const r = await apiCall("/auth/device", { method: "POST", body: "{}" });
+  if (r && r.deviceKey) {
+    try { localStorage.setItem(DEVICE_KEYS_STORAGE, JSON.stringify({ ...readDeviceKeys(), [userId]: r.deviceKey })); } catch {}
+  }
+}
+
 // Assistente de bandeja do Windows (autostart/tray-helper.ps1): restaura e traz
 // a janela do quadro para a frente, o que a própria página não pode fazer.
 // Roda na máquina de cada usuário, só em loopback.
@@ -3208,7 +3223,90 @@ function AdminPanel({ users, onUpdateRole, onCreateUser, onDeleteUser, onClose, 
 const AVATAR_COLORS = ["#ff642e", "#fdab3d", "#a25ddc", "#00c875", "#579bfc", "#e2445c", "#ff158a", "#037f4c", "#0086c0", "#9d50dd", "#ffcb00", "#784bd1"];
 const DEPARTMENTS = ["Operações", "Vendas", "Marketing", "Financeiro", "Logística", "Atendimento", "Administrativo", "TI"];
 
-function ProfileEditor({ userData, onSave, onClose, allUsers }) {
+const RECOVERY_QUESTIONS = [
+  "Qual o nome do seu primeiro animal de estimação?",
+  "Em que cidade você nasceu?",
+  "Qual o nome da sua primeira escola?",
+  "Qual o apelido que sua família te chama?",
+  "Qual o nome do seu melhor amigo de infância?",
+];
+
+// Pergunta secreta: permite recuperar a senha sozinho num computador novo.
+function RecoveryQuestionCard({ onSaved }) {
+  const [current, setCurrent] = useState(undefined); // undefined = carregando, null = sem pergunta
+  const [editing, setEditing] = useState(false);
+  const [preset, setPreset] = useState(RECOVERY_QUESTIONS[0]);
+  const [custom, setCustom] = useState("");
+  const [answer, setAnswer] = useState("");
+  const [pass, setPass] = useState("");
+  const [msg, setMsg] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    apiCall("/auth/recovery").then(r => setCurrent(r && !r.error ? r.question : null));
+  }, []);
+
+  const save = async () => {
+    const question = preset === "__custom__" ? custom.trim() : preset;
+    if (question.length < 5) { setMsg({ ok: false, text: "Escreva a pergunta" }); return; }
+    if (answer.trim().length < 2) { setMsg({ ok: false, text: "Escreva a resposta" }); return; }
+    if (!pass) { setMsg({ ok: false, text: "Digite sua senha atual para confirmar" }); return; }
+    setBusy(true); setMsg(null);
+    const r = await apiCall("/auth/recovery", { method: "PUT", returnError: true, body: JSON.stringify({ question, answer, currentPassword: pass }) });
+    setBusy(false);
+    if (!r || r.error) { setMsg({ ok: false, text: r?.error || "Falha ao salvar" }); return; }
+    setCurrent(r.question); setEditing(false); setAnswer(""); setPass(""); setCustom("");
+    setMsg({ ok: true, text: "Pergunta secreta salva" });
+    onSaved && onSaved();
+  };
+
+  const inputStyle = { width: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid #444", background: "#13151a", color: "#e8eaed", fontSize: 13, outline: "none", boxSizing: "border-box" };
+  const labelStyle = { fontSize: 11, fontWeight: 600, color: "#778ca3", display: "block", marginBottom: 4 };
+
+  return (
+    <div style={{ background: "#23262e", borderRadius: 12, padding: 16, border: `1px solid ${current === null ? "#fdab3d66" : "#333"}` }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: editing ? 16 : 0 }}>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 14, color: "#e8eaed" }}>Pergunta secreta</div>
+          <div style={{ fontSize: 12, color: current === null ? "#fdab3d" : "#778ca3", marginTop: 2 }}>
+            {current === undefined ? "Carregando..." : current === null
+              ? "Não cadastrada — sem ela você só recupera a senha no computador onde já entrou"
+              : <>Cadastrada: <i>{current}</i></>}
+          </div>
+        </div>
+        {current !== undefined && (
+          <button onClick={() => { setEditing(!editing); setMsg(null); }} style={{ background: editing ? "#e2445c20" : "#6c5ce720", color: editing ? "#e2445c" : "#6c5ce7", border: "none", borderRadius: 8, padding: "6px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer", flexShrink: 0 }}>
+            {editing ? "Cancelar" : current ? "Trocar" : "Cadastrar"}
+          </button>
+        )}
+      </div>
+      {editing && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <div><label style={labelStyle}>Pergunta</label>
+            <select value={preset} onChange={e => setPreset(e.target.value)} style={inputStyle}>
+              {RECOVERY_QUESTIONS.map(q => <option key={q} value={q}>{q}</option>)}
+              <option value="__custom__">Escrever minha própria pergunta...</option>
+            </select></div>
+          {preset === "__custom__" && (
+            <div><label style={labelStyle}>Sua pergunta</label>
+              <input value={custom} onChange={e => setCustom(e.target.value)} maxLength={150} style={inputStyle} /></div>
+          )}
+          <div><label style={labelStyle}>Resposta</label>
+            <input value={answer} onChange={e => setAnswer(e.target.value)} autoComplete="off" placeholder="Algo que só você sabe" style={inputStyle} />
+            <div style={{ fontSize: 10, color: "#556", marginTop: 4 }}>Maiúsculas e acentos não fazem diferença. Ninguém, nem o admin, consegue ver a resposta.</div></div>
+          <div><label style={labelStyle}>Senha atual (para confirmar)</label>
+            <input value={pass} onChange={e => setPass(e.target.value)} type="password" autoComplete="current-password" style={inputStyle} /></div>
+          <button onClick={save} disabled={busy} style={{ padding: "10px", borderRadius: 8, border: "none", background: busy ? "#555" : "#6c5ce7", color: "#fff", fontSize: 13, fontWeight: 700, cursor: busy ? "wait" : "pointer" }}>
+            {busy ? "Salvando..." : "Salvar pergunta secreta"}
+          </button>
+        </div>
+      )}
+      {msg && <div style={{ fontSize: 11, marginTop: 8, color: msg.ok ? "#00c875" : "#e2445c" }}>{msg.text}</div>}
+    </div>
+  );
+}
+
+function ProfileEditor({ userData, onSave, onClose, allUsers, initialTab, onRecoverySaved }) {
   const [name, setName] = useState(userData.name || "");
   const [username, setUsername] = useState(userData.username || "");
   const [phone, setPhone] = useState(userData.phone || "");
@@ -3221,7 +3319,7 @@ function ProfileEditor({ userData, onSave, onClose, allUsers }) {
   const [showPassSection, setShowPassSection] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
-  const [tab, setTab] = useState("info");
+  const [tab, setTab] = useState(initialTab || "info");
 
   const handleSave = async () => {
     setError("");
@@ -3356,6 +3454,7 @@ function ProfileEditor({ userData, onSave, onClose, allUsers }) {
                   </div>
                 )}
               </div>
+              <RecoveryQuestionCard onSaved={onRecoverySaved} />
               <div style={{ background: "#23262e", borderRadius: 12, padding: 16, border: "1px solid #333" }}>
                 <div style={{ fontWeight: 700, fontSize: 14, color: "#e8eaed", marginBottom: 4 }}>Informações da conta</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 10 }}>
@@ -3414,6 +3513,100 @@ function ProfileEditor({ userData, onSave, onClose, allUsers }) {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ─── ESQUECEU A SENHA ────────────────────────────────────────────────────────
+// Sem admin e sem e-mail: (1) aparelho onde a pessoa já entrou, ou
+// (2) pergunta secreta cadastrada no Editar perfil. Admin só em último caso.
+function ForgotPassword({ initialUsername, onLogin }) {
+  const [un, setUn] = useState(initialUsername || "");
+  const [stage, setStage] = useState("ask"); // ask | device | question | none
+  const [question, setQuestion] = useState("");
+  const [answer, setAnswer] = useState("");
+  const [pass1, setPass1] = useState("");
+  const [pass2, setPass2] = useState("");
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const inputStyle = { width: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid #444", background: "#13151a", color: "#e8eaed", fontSize: 13, outline: "none", boxSizing: "border-box" };
+  const labelStyle = { fontSize: 11, fontWeight: 600, color: "#a5b1c2", display: "block", marginBottom: 4 };
+  const btnStyle = { width: "100%", padding: "10px", borderRadius: 8, border: "none", background: busy ? "#555" : "#6c5ce7", color: "#fff", fontSize: 13, fontWeight: 700, cursor: busy ? "wait" : "pointer" };
+
+  const check = async () => {
+    const u = un.trim().toLowerCase();
+    if (!u) { setMsg("Digite seu nome de usuário"); return; }
+    if (u.includes("@")) { setMsg("Use o nome de usuário, não o e-mail"); return; }
+    setBusy(true); setMsg("");
+    const r = await apiCall("/auth/recovery/options", { method: "POST", returnError: true, body: JSON.stringify({ username: u, deviceKeys: allDeviceKeys() }) });
+    setBusy(false);
+    if (!r || r.error) { setMsg(r?.error || "Falha de conexão com o servidor"); return; }
+    if (r.locked) { setMsg(`Muitas tentativas. Tente de novo em ${r.locked} min.`); return; }
+    if (r.device) setStage("device");
+    else if (r.question) { setQuestion(r.question); setStage("question"); }
+    else setStage("none");
+  };
+
+  const reset = async () => {
+    if (stage === "question" && !answer.trim()) { setMsg("Responda a pergunta"); return; }
+    if (pass1.length < 4) { setMsg("A senha nova deve ter pelo menos 4 caracteres"); return; }
+    if (pass1 !== pass2) { setMsg("As senhas não coincidem"); return; }
+    setBusy(true); setMsg("");
+    const body = { username: un.trim().toLowerCase(), newPassword: pass1 };
+    if (stage === "device") body.deviceKeys = allDeviceKeys(); else body.answer = answer;
+    const r = await apiCall("/auth/recovery/reset", { method: "POST", returnError: true, body: JSON.stringify(body) });
+    setBusy(false);
+    if (r && r.token) { setToken(r.token); onLogin(r.user); return; }
+    setMsg(r?.error || "Não foi possível trocar a senha");
+  };
+
+  const passFields = (
+    <>
+      <div><label style={labelStyle}>Senha nova</label>
+        <input value={pass1} onChange={e => { setPass1(e.target.value); setMsg(""); }} type="password" placeholder="Mínimo 4 caracteres" autoComplete="new-password" style={inputStyle} /></div>
+      <div><label style={labelStyle}>Confirmar senha nova</label>
+        <input value={pass2} onChange={e => { setPass2(e.target.value); setMsg(""); }} onKeyDown={e => e.key === "Enter" && reset()} type="password" placeholder="Repita a senha nova" autoComplete="new-password" style={inputStyle} /></div>
+      <button onClick={reset} disabled={busy} style={btnStyle}>{busy ? "Salvando..." : "Salvar senha nova e entrar"}</button>
+    </>
+  );
+
+  return (
+    <div style={{ background: "rgba(108,92,231,.1)", border: "1px solid rgba(108,92,231,.3)", borderRadius: 10, padding: "12px 14px", marginTop: -12, marginBottom: 16, fontSize: 12, color: "#c8c3f5", lineHeight: 1.5, display: "flex", flexDirection: "column", gap: 10 }}>
+      <div style={{ fontWeight: 700, color: "#e8eaed" }}>Recuperar senha</div>
+      {stage === "ask" && (
+        <>
+          <div><label style={labelStyle}>Seu nome de usuário</label>
+            <input value={un} onChange={e => { setUn(e.target.value); setMsg(""); }} onKeyDown={e => e.key === "Enter" && check()} autoCapitalize="none" spellCheck={false} placeholder="ex.: junior" style={inputStyle} /></div>
+          <button onClick={check} disabled={busy} style={btnStyle}>{busy ? "Verificando..." : "Continuar"}</button>
+        </>
+      )}
+      {stage === "device" && (
+        <>
+          <div>Você já entrou neste computador como <b>@{un.trim().toLowerCase()}</b>. Crie sua senha nova:</div>
+          {passFields}
+        </>
+      )}
+      {stage === "question" && (
+        <>
+          <div>Responda sua pergunta secreta:</div>
+          <div style={{ fontWeight: 700, color: "#e8eaed" }}>{question}</div>
+          <div><label style={labelStyle}>Resposta</label>
+            <input value={answer} onChange={e => { setAnswer(e.target.value); setMsg(""); }} autoComplete="off" style={inputStyle} /></div>
+          {passFields}
+        </>
+      )}
+      {stage === "none" && (
+        <div>
+          Não dá para recuperar daqui: este computador não é um em que você já entrou, e não há pergunta secreta cadastrada para <b>@{un.trim().toLowerCase()}</b>.
+          Tente no computador onde você costuma usar o Rotinas ou peça a um administrador uma senha nova no <b>Painel Admin</b>.
+          Depois de entrar, cadastre sua pergunta secreta no <b>Editar perfil → Segurança</b>.
+        </div>
+      )}
+      {stage !== "ask" && (
+        <span onClick={() => { setStage("ask"); setMsg(""); setAnswer(""); setPass1(""); setPass2(""); }} style={{ fontSize: 11, color: "#a29bfe", cursor: "pointer", alignSelf: "flex-start" }}>← Outro usuário</span>
+      )}
+      {msg && <div style={{ color: "#ff7a8a", fontWeight: 600 }}>{msg}</div>}
     </div>
   );
 }
@@ -3566,15 +3759,9 @@ function LoginScreen({ onLogin }) {
           <div style={{ textAlign: "right", marginBottom: 22, marginTop: isSignup ? 12 : 0 }}>
             {!isSignup && <span onClick={() => setShowForgot(f => !f)} style={{ fontSize: 12, color: "#6c5ce7", cursor: "pointer", fontWeight: 500 }}>Esqueceu a senha?</span>}
           </div>
-          {/* O servidor fica só na rede do escritório e não manda e-mail: quem
-              esqueceu pede ao administrador, que define uma senha nova no
-              Painel Admin (botão 🔑 ao lado da pessoa). */}
-          {!isSignup && showForgot && (
-            <div style={{ background: "rgba(108,92,231,.1)", border: "1px solid rgba(108,92,231,.3)", borderRadius: 10, padding: "10px 14px", marginTop: -12, marginBottom: 16, fontSize: 12, color: "#c8c3f5", lineHeight: 1.5 }}>
-              Peça a um administrador para definir uma senha nova para você no <b>Painel Admin</b>.
-              Depois, entre com ela e troque por uma sua no <b>Editar perfil</b>.
-            </div>
-          )}
+          {/* Recuperação sem admin: aparelho conhecido ou pergunta secreta.
+              O botão 🔑 do Painel Admin fica só como último recurso. */}
+          {!isSignup && showForgot && <ForgotPassword initialUsername={username} onLogin={onLogin} />}
 
           {/* Error */}
           {error && (
@@ -4131,6 +4318,13 @@ function Dashboard({ currentUser, onLogout }) {
   const [showReports, setShowReports] = useState(false);
   const [reportsFullscreen, setReportsFullscreen] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
+  const [profileTab, setProfileTab] = useState("info");
+  // Lembrete para cadastrar a pergunta secreta ("Agora não" esconde até o próximo login).
+  const [needsRecovery, setNeedsRecovery] = useState(false);
+  const [recoveryNagHidden, setRecoveryNagHidden] = useState(() => { try { return sessionStorage.getItem("rotina_recovery_nag") === "1"; } catch { return false; } });
+  useEffect(() => {
+    apiCall("/auth/recovery").then(r => { if (r && !r.error) setNeedsRecovery(!r.question); });
+  }, []);
   const [showCreateUser, setShowCreateUser] = useState(false);
   const [users, setUsers] = useState([]);
   const [dataLoaded, setDataLoaded] = useState(false);
@@ -5387,7 +5581,17 @@ function Dashboard({ currentUser, onLogout }) {
       {showDrive && <GoogleDrivePanel onClose={() => setShowDrive(false)} />}
       {showAdminPanel && isAdmin && <AdminPanel users={users} onUpdateRole={apiUpdateUserRole} onCreateUser={apiCreateUser} onDeleteUser={apiDeleteUser} onClose={() => setShowAdminPanel(false)} currentUser={currentUser.name} currentUserId={currentUser.id} />}
       {showReports && isAdmin && <ReportsPanel fullscreen={reportsFullscreen} onToggleFullscreen={() => setReportsFullscreen(f => !f)} onClose={() => { setShowReports(false); setReportsFullscreen(false); }} boardId={currentBoardId} boardName={(boards.find(b => b.id === currentBoardId) || {}).name} />}
-      {showProfile && <ProfileEditor userData={currentUserData} onSave={apiUpdateUserProfile} onClose={() => setShowProfile(false)} allUsers={users} />}
+      {showProfile && <ProfileEditor userData={currentUserData} onSave={apiUpdateUserProfile} onClose={() => { setShowProfile(false); setProfileTab("info"); }} allUsers={users} initialTab={profileTab} onRecoverySaved={() => setNeedsRecovery(false)} />}
+      {needsRecovery && !recoveryNagHidden && !showProfile && (
+        <div style={{ position: "fixed", left: 16, bottom: 16, zIndex: 90, maxWidth: 360, background: "#1a1d23", border: "1px solid #fdab3d66", borderRadius: 12, padding: "12px 14px", boxShadow: "0 8px 30px rgba(0,0,0,.5)", fontSize: 12, color: "#c8ccd4", lineHeight: 1.5 }}>
+          <div style={{ fontWeight: 700, color: "#fdab3d", marginBottom: 4 }}>🔑 Cadastre sua pergunta secreta</div>
+          Com ela você recupera a senha sozinho, mesmo em outro computador, sem precisar de um administrador.
+          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+            <button onClick={() => { setProfileTab("security"); setShowProfile(true); }} style={{ padding: "6px 12px", borderRadius: 8, border: "none", background: "#6c5ce7", color: "#fff", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>Cadastrar agora</button>
+            <button onClick={() => { setRecoveryNagHidden(true); try { sessionStorage.setItem("rotina_recovery_nag", "1"); } catch {} }} style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid #444", background: "transparent", color: "#a5b1c2", fontSize: 12, cursor: "pointer" }}>Agora não</button>
+          </div>
+        </div>
+      )}
       {showCreateUser && isAdmin && <CreateUserModal onClose={() => setShowCreateUser(false)} onCreate={apiCreateUser} />}
 
       <style>{`
@@ -5443,6 +5647,9 @@ export default function App() {
   }, []);
 
   const handleLogout = () => { setToken(null); setUser(null); };
+
+  // Todo login (ou sessão já aberta) marca este navegador como aparelho conhecido.
+  useEffect(() => { if (user?.id) ensureDeviceKey(user.id); }, [user?.id]);
 
   if (checking) return (
     <div style={{ fontFamily: "'DM Sans', system-ui, sans-serif", background: "#0b0d11", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}>

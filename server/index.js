@@ -263,6 +263,25 @@ function rewriteResponsibleNames(mapNames) {
   if (cols.length && !cols.includes('restricted')) db.exec("ALTER TABLE boards ADD COLUMN restricted INTEGER DEFAULT 0");
 })();
 
+// Recuperação de senha sem admin e sem e-mail (05/11/2026):
+//  - aparelho conhecido: cada login grava uma chave aleatória no navegador;
+//    o servidor guarda só o hash. Quem esqueceu a senha num aparelho onde já
+//    entrou cria a senha nova direto.
+//  - pergunta secreta: cadastrada no Editar perfil; a resposta fica com bcrypt.
+(function migratePasswordRecovery() {
+  const cols = db.prepare("PRAGMA table_info(users)").all().map(c => c.name);
+  if (!cols.includes('recovery_question')) db.exec("ALTER TABLE users ADD COLUMN recovery_question TEXT");
+  if (!cols.includes('recovery_answer')) db.exec("ALTER TABLE users ADD COLUMN recovery_answer TEXT");
+  db.exec(`CREATE TABLE IF NOT EXISTS trusted_devices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    key_hash TEXT NOT NULL UNIQUE,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    last_used_at DATETIME
+  )`);
+  db.exec("CREATE INDEX IF NOT EXISTS idx_trusted_devices_user ON trusted_devices(user_id)");
+})();
+
 // Non-destructive migration: subitems ganharam prioridade própria (a coluna
 // "Prioridade" já era exibida na linha do subitem, mas o valor não era salvo).
 (function migrateSubitemPriority() {
@@ -844,6 +863,119 @@ app.post('/api/auth/register', (req, res) => {
   res.json({ token, user: { id: u.id, name: u.name, username: u.username, role: u.role, phone: u.phone || '', department: u.department || '', bio: u.bio || '', avatar_color: u.avatar_color } });
 });
 
+// ===== Recuperação de senha sem admin =====
+const hashDeviceKey = (k) => crypto.createHash('sha256').update(String(k)).digest('hex');
+// Resposta da pergunta secreta: ignora maiúsculas, acentos e espaços extras.
+const normalizeAnswer = (a) => String(a || '').normalize('NFD').replace(/[̀-ͯ]/g, '')
+  .toLowerCase().replace(/\s+/g, ' ').trim();
+const MAX_DEVICES_PER_USER = 20;
+const RECOVERY_MAX_FAILS = 5;
+const RECOVERY_LOCK_MS = 15 * 60 * 1000;
+const _recoveryFails = new Map(); // username -> { count, lockedUntil }
+
+function recoveryLocked(un) {
+  const r = _recoveryFails.get(un);
+  return r && r.lockedUntil && Date.now() < r.lockedUntil ? Math.ceil((r.lockedUntil - Date.now()) / 60000) : 0;
+}
+function recoveryFail(un) {
+  const r = _recoveryFails.get(un) || { count: 0, lockedUntil: 0 };
+  if (r.lockedUntil && Date.now() >= r.lockedUntil) { r.count = 0; r.lockedUntil = 0; }
+  r.count++;
+  if (r.count >= RECOVERY_MAX_FAILS) r.lockedUntil = Date.now() + RECOVERY_LOCK_MS;
+  _recoveryFails.set(un, r);
+  return RECOVERY_MAX_FAILS - r.count;
+}
+
+// Chave do aparelho que bate com o usuário (o navegador manda todas as que tem).
+function matchTrustedDevice(userId, keys) {
+  if (!Array.isArray(keys)) return null;
+  const stmt = db.prepare('SELECT id FROM trusted_devices WHERE user_id=? AND key_hash=?');
+  for (const k of keys.slice(0, 20)) {
+    if (typeof k !== 'string' || k.length < 32 || k.length > 128) continue;
+    const row = stmt.get(userId, hashDeviceKey(k));
+    if (row) return row.id;
+  }
+  return null;
+}
+
+function loginPayload(u) {
+  const token = jwt.sign({ id: u.id, name: u.name, username: u.username, role: u.role }, JWT_SECRET, { expiresIn: '7d' });
+  return { token, user: { id: u.id, name: u.name, username: u.username, role: u.role, phone: u.phone || '', department: u.department || '', bio: u.bio || '', avatar_color: u.avatar_color } };
+}
+
+// Logado: marca este navegador como aparelho conhecido e devolve a chave.
+app.post('/api/auth/device', auth, (req, res) => {
+  const key = crypto.randomBytes(32).toString('hex');
+  db.prepare('INSERT INTO trusted_devices (user_id, key_hash, last_used_at) VALUES (?,?,CURRENT_TIMESTAMP)').run(req.user.id, hashDeviceKey(key));
+  // Guarda só os mais recentes por pessoa.
+  db.prepare(`DELETE FROM trusted_devices WHERE user_id=? AND id NOT IN
+    (SELECT id FROM trusted_devices WHERE user_id=? ORDER BY id DESC LIMIT ?)`).run(req.user.id, req.user.id, MAX_DEVICES_PER_USER);
+  res.json({ deviceKey: key });
+});
+
+// Esqueceu a senha, passo 1: o que este aparelho pode usar para recuperar.
+app.post('/api/auth/recovery/options', (req, res) => {
+  const un = normalizeUsername(req.body?.username);
+  if (!un) return res.status(400).json({ error: 'Digite seu nome de usuário' });
+  const u = db.prepare('SELECT id, recovery_question, recovery_answer FROM users WHERE username=?').get(un);
+  const locked = recoveryLocked(un);
+  if (!u) return res.json({ device: false, question: null, locked });
+  res.json({
+    device: !!matchTrustedDevice(u.id, req.body?.deviceKeys),
+    question: u.recovery_answer ? u.recovery_question : null,
+    locked,
+  });
+});
+
+// Esqueceu a senha, passo 2: prova (aparelho ou resposta) + senha nova. Já entra.
+app.post('/api/auth/recovery/reset', (req, res) => {
+  const { username, deviceKeys, answer, newPassword } = req.body || {};
+  const un = normalizeUsername(username);
+  if (!un) return res.status(400).json({ error: 'Digite seu nome de usuário' });
+  if (!newPassword || String(newPassword).length < 4) return res.status(400).json({ error: 'A senha nova deve ter pelo menos 4 caracteres' });
+  const mins = recoveryLocked(un);
+  if (mins) return res.status(429).json({ error: `Muitas tentativas. Tente de novo em ${mins} min.` });
+  const u = db.prepare('SELECT * FROM users WHERE username=?').get(un);
+  let ok = false, via = '';
+  if (u) {
+    const devId = matchTrustedDevice(u.id, deviceKeys);
+    if (devId) {
+      ok = true; via = 'aparelho';
+      db.prepare('UPDATE trusted_devices SET last_used_at=CURRENT_TIMESTAMP WHERE id=?').run(devId);
+    } else if (answer && u.recovery_answer) {
+      ok = bcrypt.compareSync(normalizeAnswer(answer), u.recovery_answer); via = 'pergunta secreta';
+    }
+  }
+  if (!ok) {
+    const left = recoveryFail(un);
+    const lockMsg = left <= 0 ? ' Recuperação bloqueada por 15 min.' : ` Restam ${left} tentativa(s).`;
+    return res.status(403).json({ error: (answer ? 'Resposta incorreta.' : 'Não foi possível confirmar que é você.') + lockMsg });
+  }
+  _recoveryFails.delete(un);
+  db.prepare('UPDATE users SET password=? WHERE id=?').run(bcrypt.hashSync(String(newPassword), 10), u.id);
+  console.log(`🔑 Senha recuperada por @${u.username} (${via})`);
+  res.json(loginPayload(u));
+});
+
+// Pergunta secreta do próprio usuário (Editar perfil).
+app.get('/api/auth/recovery', auth, (req, res) => {
+  const u = db.prepare('SELECT recovery_question, recovery_answer FROM users WHERE id=?').get(req.user.id);
+  if (!u) return res.status(404).json({ error: 'Não encontrado' });
+  res.json({ question: u.recovery_answer ? u.recovery_question : null });
+});
+app.put('/api/auth/recovery', auth, (req, res) => {
+  const { question, answer, currentPassword } = req.body || {};
+  const q = String(question || '').trim();
+  const a = normalizeAnswer(answer);
+  if (q.length < 5 || q.length > 150) return res.status(400).json({ error: 'Escreva uma pergunta (5 a 150 caracteres)' });
+  if (a.length < 2) return res.status(400).json({ error: 'A resposta deve ter pelo menos 2 caracteres' });
+  const u = db.prepare('SELECT password FROM users WHERE id=?').get(req.user.id);
+  if (!u) return res.status(404).json({ error: 'Não encontrado' });
+  if (!currentPassword || !bcrypt.compareSync(String(currentPassword), u.password)) return res.status(403).json({ error: 'Senha atual incorreta' });
+  db.prepare('UPDATE users SET recovery_question=?, recovery_answer=? WHERE id=?').run(q, bcrypt.hashSync(a, 10), req.user.id);
+  res.json({ question: q });
+});
+
 app.get('/api/auth/me',auth,(req,res)=>{const u=db.prepare('SELECT id,name,username,role,phone,department,bio,avatar_color,created_at FROM users WHERE id=?').get(req.user.id);if(!u)return res.status(404).json({error:'Não encontrado'});res.json(u);});
 
 app.get('/api/users',auth,(req,res)=>res.json(db.prepare('SELECT id,name,username,role,phone,department,bio,avatar_color FROM users ORDER BY name').all()));
@@ -876,6 +1008,7 @@ app.delete('/api/users/:id',auth,adminOnly,(req,res)=>{
   const tx = db.transaction(() => {
     db.prepare('DELETE FROM users WHERE id=?').run(id);
     db.prepare('DELETE FROM board_members WHERE user_id=?').run(id);
+    db.prepare('DELETE FROM trusted_devices WHERE user_id=?').run(id);
     let cleaned = 0;
     const updTask = db.prepare('UPDATE tasks SET responsible=? WHERE id=?');
     for (const t of db.prepare('SELECT id, responsible FROM tasks').all()) {
