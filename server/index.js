@@ -1773,6 +1773,45 @@ app.get('/api/reports', auth, adminOnly, (req, res) => {
     for (const r of liveSnapshotRows(today)) if (!boardId || r.board_id === boardId) rows.push(r);
   }
 
+  // Canal = subitem (Shopee, Mercado Livre…); horário = coluna numérica
+  // ("Pedidos 7h30"). Agrupa pelo id e mostra o nome ATUAL — horários e canais
+  // já foram renomeados (ex.: "Pedidos 7h" → "Pedidos 7h30") e o snapshot
+  // guarda o nome antigo. Valor lançado direto na tarefa (sem subitem) vira o
+  // canal "<tarefa> (sem canal)".
+  const subName = new Map(db.prepare('SELECT id, name FROM subitems').all().map(s => [s.id, s.name]));
+  const colName = new Map(db.prepare('SELECT id, name FROM columns_config').all().map(c => [c.id, c.name]));
+  const channelKey = r => r.subitem_id ? r.subitem_id : 'task:' + r.task_id;
+  const channelsMap = new Map();
+  for (const r of rows) {
+    const k = channelKey(r);
+    if (!channelsMap.has(k)) {
+      const nome = r.subitem_id ? (subName.get(r.subitem_id) || r.subitem_name || r.subitem_id) : `${r.task_name || r.task_id} (sem canal)`;
+      channelsMap.set(k, { id: k, name: nome, task_name: r.task_name || '', total: 0 });
+    }
+    channelsMap.get(k).total += Number(r.value) || 0;
+  }
+  const channels = [...channelsMap.values()].sort((a, b) => b.total - a.total || a.name.localeCompare(b.name));
+  const channel = req.query.channel ? String(req.query.channel) : null;
+  if (channel) {
+    for (let i = rows.length - 1; i >= 0; i--) if (channelKey(rows[i]) !== channel) rows.splice(i, 1);
+  }
+  // "Pedidos 13h30" → 810 min, para ordenar os horários do dia.
+  const horaMin = nome => { const m = /(\d{1,2})\s*h\s*(\d{2})?/i.exec(nome || ''); return m ? Number(m[1]) * 60 + Number(m[2] || 0) : Infinity; };
+  const perChannelMap = new Map();
+  for (const r of rows) {
+    const k = channelKey(r);
+    if (!perChannelMap.has(k)) perChannelMap.set(k, { ...channelsMap.get(k), total: 0, hours: new Map() });
+    const ch = perChannelMap.get(k);
+    const v = Number(r.value) || 0;
+    ch.total += v;
+    const nomeHora = colName.get(r.column_id) || r.column_name || r.column_id;
+    if (!ch.hours.has(r.column_id)) ch.hours.set(r.column_id, { column_id: r.column_id, name: nomeHora, value: 0 });
+    ch.hours.get(r.column_id).value += v;
+  }
+  const perChannel = [...perChannelMap.values()]
+    .map(ch => ({ ...ch, hours: [...ch.hours.values()].sort((a, b) => horaMin(a.name) - horaMin(b.name) || a.name.localeCompare(b.name)) }))
+    .sort((a, b) => b.total - a.total || a.name.localeCompare(b.name));
+
   // Autor pelo id → nome atual; o nome gravado só vale se o usuário foi excluído.
   const authorRows = db.prepare(
     `SELECT e.date, e.task_id, e.subitem_id, e.column_id, COALESCE(u.name, e.user_name) AS user_name, SUM(e.delta) AS v
@@ -1835,6 +1874,7 @@ app.get('/api/reports', auth, adminOnly, (req, res) => {
     byDay: Object.entries(byDay).map(([date,value]) => ({ date, value })).sort((a,b) => a.date.localeCompare(b.date)),
     perUser: Object.entries(perUser).map(([name,value]) => ({ name, value: Math.round(value*100)/100 })).sort((a,b) => b.value - a.value),
     perTask: Object.values(perTask).sort((a,b) => b.value - a.value),
+    channels, channel, perChannel,
     includesToday, today,
     lastRolloverDate: db.prepare("SELECT value FROM settings WHERE key='last_rollover_date'").get()?.value || null
   });

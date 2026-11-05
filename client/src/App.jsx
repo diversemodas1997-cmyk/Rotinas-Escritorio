@@ -2665,27 +2665,23 @@ function LockedOverlay({ message = "Recurso restrito a administradores" }) {
 const WEEKDAYS_BR = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
 const weekdayBR = s => s ? WEEKDAYS_BR[new Date(s + "T00:00:00Z").getUTCDay()] : "";
 
-function printReportSheet(d, { periodLabel, boardName }) {
+function printReportSheet(d, { periodLabel, boardName, channelLabel }) {
   const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const fmtBR = s => { if (!s) return ""; const [y, m, dd] = s.split("-"); return `${dd}/${m}/${y}`; };
   const num = v => (Math.round((Number(v) || 0) * 100) / 100).toLocaleString("pt-BR");
   const faixa = d.start === d.end ? `${weekdayBR(d.start)} ${fmtBR(d.start)}` : `${weekdayBR(d.start)} ${fmtBR(d.start)} a ${weekdayBR(d.end)} ${fmtBR(d.end)}`;
 
-  // Agrupa por tarefa, mantendo a ordem de maior volume que o servidor já manda.
-  const grupos = [];
-  const porTarefa = {};
-  for (const x of d.perTask || []) {
-    if (!porTarefa[x.task_id]) { porTarefa[x.task_id] = { nome: x.task_name || x.task_id, itens: [], total: 0 }; grupos.push(porTarefa[x.task_id]); }
-    porTarefa[x.task_id].itens.push(x);
-    porTarefa[x.task_id].total += Number(x.value) || 0;
-  }
+  // Um bloco por canal: os horários em ordem do dia e, no fim, o total do
+  // canal = soma de todos os horários.
+  const canais = d.perChannel || [];
+  const tabelaCanais = canais.map(c => `
+    <tbody class="canal">
+      <tr class="grupo"><td colspan="2">${esc(c.name)}</td></tr>
+      ${c.hours.map(h => `<tr><td class="hora">${esc(h.name)}</td><td class="n">${num(h.value)}</td></tr>`).join("")}
+      <tr class="totcanal"><td>Total ${esc(c.name)}</td><td class="n">${num(c.total)}</td></tr>
+    </tbody>`).join("");
 
-  const tabelaTarefas = grupos.map(g => `
-    <tr class="grupo"><td colspan="3">${esc(g.nome)}</td><td class="n">${num(g.total)}</td></tr>
-    ${g.itens.map(x => `<tr><td></td><td>${esc(x.subitem_name || "—")}</td><td>${esc(x.column_name || x.column_id)}</td><td class="n">${num(x.value)}</td></tr>`).join("")}
-  `).join("");
-
-  const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Relatório ${esc(boardName || "")} ${esc(faixa)}</title>
+  const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Relatório ${esc(boardName || "")} ${esc(channelLabel || "")} ${esc(faixa)}</title>
 <style>
   @page { size: A4; margin: 14mm; }
   * { box-sizing: border-box; }
@@ -2702,6 +2698,9 @@ function printReportSheet(d, { periodLabel, boardName }) {
   th { font-size: 9pt; text-transform: uppercase; color: #444; border-bottom: 1px solid #111; }
   .n { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
   tr.grupo td { font-weight: bold; background: #eee; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  tbody.canal { page-break-inside: avoid; }
+  td.hora { padding-left: 18px; }
+  tr.totcanal td { font-weight: bold; border-top: 1px solid #111; border-bottom: 2px solid #111; }
   tfoot td { font-weight: bold; border-top: 2px solid #111; border-bottom: none; }
   tr { page-break-inside: avoid; }
   .nota { font-size: 8pt; color: #666; margin-top: 4px; }
@@ -2710,20 +2709,21 @@ function printReportSheet(d, { periodLabel, boardName }) {
   .assin div { flex: 1; border-top: 1px solid #111; padding-top: 4px; font-size: 9pt; text-align: center; }
 </style></head><body>
   <h1>Relatório de quantidades${boardName ? ` — ${esc(boardName)}` : ""}</h1>
-  <div class="sub">${esc(periodLabel)}: ${esc(faixa)}${d.includesToday ? " — inclui hoje, parcial (o dia ainda não fechou)" : ""}</div>
+  <div class="sub">${esc(periodLabel)}: ${esc(faixa)} — ${esc(channelLabel || "Todos os canais")}${d.includesToday ? " — inclui hoje, parcial (o dia ainda não fechou)" : ""}</div>
 
   <div class="resumo">
     <div><span>Total no período</span><b>${num(d.total)}</b></div>
+    <div><span>Canais</span><b>${canais.length}</b></div>
     <div><span>Dias com atividade</span><b>${(d.byDay || []).filter(x => x.value > 0).length}</b></div>
     <div><span>Responsáveis</span><b>${(d.perUser || []).filter(x => !x.name.startsWith("—")).length}</b></div>
   </div>
 
-  ${(d.perTask || []).length ? `
-  <h2>Por tarefa / subitem / coluna</h2>
+  ${canais.length ? `
+  <h2>Por canal e horário</h2>
   <table>
-    <thead><tr><th>Tarefa</th><th>Subitem</th><th>Coluna</th><th class="n">Qtd.</th></tr></thead>
-    <tbody>${tabelaTarefas}</tbody>
-    <tfoot><tr><td colspan="3">Total geral</td><td class="n">${num(d.total)}</td></tr></tfoot>
+    <thead><tr><th>Canal / horário</th><th class="n">Qtd.</th></tr></thead>
+    ${tabelaCanais}
+    ${canais.length > 1 ? `<tfoot><tr><td>Total geral (${canais.length} canais)</td><td class="n">${num(d.total)}</td></tr></tfoot>` : ""}
   </table>` : `<p>Sem quantidades registradas neste período.</p>`}
 
   ${(d.byDay || []).length > 1 ? `
@@ -2767,18 +2767,30 @@ function ReportsPanel({ onClose, fullscreen, onToggleFullscreen, boardId, boardN
   });
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  // Canal (subitem) escolhido; "" = todos os canais.
+  const [channel, setChannel] = useState("");
+  // Nomes dos canais já vistos, para o filtro não perder a opção escolhida
+  // quando ela não tem número no período.
+  const [knownChannels, setKnownChannels] = useState({});
+
+  useEffect(() => { setChannel(""); setKnownChannels({}); }, [boardId]);
 
   useEffect(() => {
     let alive = true;
     setLoading(true);
     // Relatório é isolado por quadro: sempre pede o do quadro aberto.
     const escopo = boardId ? `&boardId=${encodeURIComponent(boardId)}` : "";
-    fetch(`${API_URL}/api/reports?period=${period}&date=${date}${escopo}`, { headers: { Authorization: `Bearer ${getToken()}` } })
+    const canal = channel ? `&channel=${encodeURIComponent(channel)}` : "";
+    fetch(`${API_URL}/api/reports?period=${period}&date=${date}${escopo}${canal}`, { headers: { Authorization: `Bearer ${getToken()}` } })
       .then(r => r.json())
-      .then(d => { if (alive) { setData(d); setLoading(false); } })
+      .then(d => {
+        if (!alive) return;
+        setData(d); setLoading(false);
+        if (Array.isArray(d.channels)) setKnownChannels(k => { const n = { ...k }; for (const c of d.channels) n[c.id] = c.name; return n; });
+      })
       .catch(() => { if (alive) { setData({ error: true }); setLoading(false); } });
     return () => { alive = false; };
-  }, [period, date, boardId]);
+  }, [period, date, boardId, channel]);
 
   const periods = [
     { key: "day", label: "Dia" }, { key: "week", label: "Semana" },
@@ -2797,7 +2809,15 @@ function ReportsPanel({ onClose, fullscreen, onToggleFullscreen, boardId, boardN
   const d = data || {};
   const maxDay = d.byDay ? Math.max(1, ...d.byDay.map(x => x.value)) : 1;
   const maxUser = d.perUser ? Math.max(1, ...d.perUser.map(x => x.value)) : 1;
-  const maxTask = d.perTask ? Math.max(1, ...d.perTask.map(x => x.value)) : 1;
+  const perChannel = d.perChannel || [];
+  // Opções do filtro: canais com número no período (com o total) e, depois,
+  // os já vistos que ficaram sem número — assim a escolha atual não some.
+  const periodChannels = d.channels || [];
+  const channelOptions = [
+    ...periodChannels.map(c => ({ id: c.id, label: `${c.name} (${Math.round(c.total * 100) / 100})` })),
+    ...Object.entries(knownChannels).filter(([id]) => !periodChannels.some(c => c.id === id)).map(([id, name]) => ({ id, label: `${name} (0)` })),
+  ];
+  const channelLabel = channel ? (knownChannels[channel] || "Canal") : "Todos os canais";
 
   return (
     <div style={container} onClick={!fullscreen ? onClose : undefined}>
@@ -2808,14 +2828,14 @@ function ReportsPanel({ onClose, fullscreen, onToggleFullscreen, boardId, boardN
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3v18h18"/><path d="M7 14l3-3 4 4 5-6"/></svg>
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontWeight: 700, fontSize: 15, color: "#e8eaed" }}>Relatório Diário</div>
+            <div style={{ fontWeight: 700, fontSize: 15, color: "#e8eaed" }}>Relatório por Canal</div>
             <div style={{ fontSize: 11, color: "#778ca3", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {/* Deixa explícito o escopo: os números são só deste quadro. */}
               {(boardName || d.boardName) && <span style={{ color: "#6c5ce7", fontWeight: 600 }}>{boardName || d.boardName} · </span>}
               {d.lastRolloverDate ? `Último fechamento: ${fmtBR(d.lastRolloverDate)}` : "Sem fechamentos ainda"}
             </div>
           </div>
-          <button onClick={() => printReportSheet(d, { periodLabel: (periods.find(p => p.key === period) || {}).label, boardName: boardName || d.boardName })}
+          <button onClick={() => printReportSheet(d, { periodLabel: (periods.find(p => p.key === period) || {}).label, boardName: boardName || d.boardName, channelLabel })}
             disabled={loading || d.error} title="Imprimir folha de relatório das quantidades"
             style={{ background: "none", border: "1px solid #3a3d45", color: loading || d.error ? "#556" : "#a5b1c2", fontSize: 12, cursor: loading || d.error ? "default" : "pointer", padding: "5px 10px", borderRadius: 6 }}>
             🖨 Imprimir
@@ -2838,6 +2858,11 @@ function ReportsPanel({ onClose, fullscreen, onToggleFullscreen, boardId, boardN
           </div>
           <input type="date" value={date} onChange={e => setDate(e.target.value)}
             style={{ background: "#13151a", border: "1px solid #2a2d35", color: "#e8eaed", padding: "6px 10px", borderRadius: 7, fontSize: 12 }} />
+          <select value={channel} onChange={e => setChannel(e.target.value)} title="Filtrar por canal"
+            style={{ background: "#13151a", border: `1px solid ${channel ? "#579bfc" : "#2a2d35"}`, color: "#e8eaed", padding: "6px 8px", borderRadius: 7, fontSize: 12, maxWidth: 230 }}>
+            <option value="">Todos os canais</option>
+            {channelOptions.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
+          </select>
           {d.start && d.end && d.start !== d.end && (
             <span style={{ fontSize: 12, color: "#e8eaed", fontWeight: 600 }}>
               {weekdayBR(d.start)} {fmtBR(d.start)} a {weekdayBR(d.end)} {fmtBR(d.end)}
@@ -2859,6 +2884,11 @@ function ReportsPanel({ onClose, fullscreen, onToggleFullscreen, boardId, boardN
                 <div>
                   <div style={{ fontSize: 11, color: "#778ca3", fontWeight: 600 }}>TOTAL NO PERÍODO</div>
                   <div style={{ fontSize: 28, fontWeight: 800, color: "#00c875" }}>{Math.round((d.total || 0) * 100) / 100}</div>
+                  <div style={{ fontSize: 10, color: "#778ca3" }}>{channelLabel}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, color: "#778ca3", fontWeight: 600 }}>CANAIS</div>
+                  <div style={{ fontSize: 28, fontWeight: 800, color: "#a29bfe" }}>{perChannel.length}</div>
                 </div>
                 <div>
                   <div style={{ fontSize: 11, color: "#778ca3", fontWeight: 600 }}>DIAS COM ATIVIDADE</div>
@@ -2914,33 +2944,51 @@ function ReportsPanel({ onClose, fullscreen, onToggleFullscreen, boardId, boardN
                 </div>
               )}
 
-              {/* Per task/subitem (more detail in fullscreen) */}
-              {(d.perTask || []).length > 0 && (
+              {/* Por canal: cada canal com seus horários e o total = soma dos horários */}
+              {perChannel.length > 0 && (
                 <div>
-                  <div style={{ fontSize: 12, fontWeight: 700, color: "#e8eaed", marginBottom: 8 }}>POR TAREFA / SUBITEM / COLUNA</div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                    {(fullscreen ? d.perTask : d.perTask.slice(0, 10)).map((x, i) => (
-                      <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 11, padding: "6px 8px", background: "#1a1d23", borderRadius: 6, border: "1px solid #23262e" }}>
-                        <div style={{ flex: 1, overflow: "hidden" }}>
-                          <div style={{ color: "#e8eaed", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{x.task_name || x.task_id}</div>
-                          <div style={{ color: "#778ca3", fontSize: 10, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                            {x.subitem_name ? `${x.subitem_name} · ` : ""}{x.column_name || x.column_id}
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "#e8eaed", marginBottom: 8 }}>
+                    {channel ? `CANAL: ${channelLabel.toUpperCase()}` : `POR CANAL (${perChannel.length})`}
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: fullscreen ? "repeat(auto-fill, minmax(300px, 1fr))" : "1fr", gap: 10, alignItems: "start" }}>
+                    {perChannel.map(c => {
+                      const maxHora = Math.max(1, ...c.hours.map(h => h.value));
+                      return (
+                        <div key={c.id} style={{ background: "#1a1d23", borderRadius: 8, border: "1px solid #2a2d35", overflow: "hidden" }}>
+                          <div onClick={() => setChannel(channel === c.id ? "" : c.id)} title={channel === c.id ? "Voltar para todos os canais" : "Ver só este canal"}
+                            style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", background: "#23262e", cursor: "pointer" }}>
+                            <div style={{ flex: 1, color: "#e8eaed", fontWeight: 700, fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.name}</div>
+                            <div style={{ fontSize: 10, color: "#778ca3" }}>{c.hours.length} horário{c.hours.length === 1 ? "" : "s"}</div>
+                          </div>
+                          <div style={{ padding: "6px 10px", display: "flex", flexDirection: "column", gap: 3 }}>
+                            {c.hours.map(h => (
+                              <div key={h.column_id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11 }}>
+                                <div style={{ width: 110, color: "#a5b1c2", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{h.name}</div>
+                                <div style={{ flex: 1, background: "#13151a", height: 10, borderRadius: 3, overflow: "hidden" }}>
+                                  <div style={{ width: `${(h.value / maxHora) * 100}%`, height: "100%", background: "#579bfc" }} />
+                                </div>
+                                <div style={{ width: 54, textAlign: "right", color: "#e8eaed", fontWeight: 600 }}>{Math.round(h.value * 100) / 100}</div>
+                              </div>
+                            ))}
+                          </div>
+                          <div style={{ display: "flex", justifyContent: "space-between", padding: "7px 10px", borderTop: "1px solid #2a2d35", fontSize: 12, fontWeight: 800 }}>
+                            <span style={{ color: "#778ca3" }}>TOTAL</span>
+                            <span style={{ color: "#00c875" }}>{Math.round(c.total * 100) / 100}</span>
                           </div>
                         </div>
-                        <div style={{ width: fullscreen ? 180 : 80, background: "#13151a", height: 12, borderRadius: 3, overflow: "hidden" }}>
-                          <div style={{ width: `${(x.value / maxTask) * 100}%`, height: "100%", background: "#579bfc" }} />
-                        </div>
-                        <div style={{ width: 60, textAlign: "right", color: "#e8eaed", fontWeight: 700 }}>{Math.round(x.value * 100) / 100}</div>
-                      </div>
-                    ))}
-                    {!fullscreen && d.perTask.length > 10 && (
-                      <div style={{ fontSize: 10, color: "#556", marginTop: 4, textAlign: "center" }}>+{d.perTask.length - 10} itens — expanda para ver todos</div>
-                    )}
+                      );
+                    })}
                   </div>
+                  {perChannel.length > 1 && (
+                    <div style={{ display: "flex", justifyContent: "space-between", marginTop: 10, padding: "10px 12px", borderRadius: 8, background: "rgba(0,200,117,.08)", border: "1px solid rgba(0,200,117,.3)", fontSize: 13, fontWeight: 800 }}>
+                      <span style={{ color: "#e8eaed" }}>TOTAL GERAL — {perChannel.length} canais</span>
+                      <span style={{ color: "#00c875" }}>{Math.round((d.total || 0) * 100) / 100}</span>
+                    </div>
+                  )}
                 </div>
               )}
 
-              {(!d.perTask || d.perTask.length === 0) && (
+              {perChannel.length === 0 && (
                 <div style={{ textAlign: "center", padding: "40px 20px", color: "#556" }}>
                   <div style={{ fontSize: 40, marginBottom: 10 }}>📊</div>
                   <div style={{ fontSize: 14, fontWeight: 600, color: "#778ca3" }}>Sem dados para este período</div>
