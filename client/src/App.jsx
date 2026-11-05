@@ -2671,15 +2671,10 @@ function printReportSheet(d, { periodLabel, boardName, channelLabel }) {
   const num = v => (Math.round((Number(v) || 0) * 100) / 100).toLocaleString("pt-BR");
   const faixa = d.start === d.end ? `${weekdayBR(d.start)} ${fmtBR(d.start)}` : `${weekdayBR(d.start)} ${fmtBR(d.start)} a ${weekdayBR(d.end)} ${fmtBR(d.end)}`;
 
-  // Um bloco por canal: os horários em ordem do dia e, no fim, o total do
-  // canal = soma de todos os horários.
+  // Na folha, uma linha por canal só com o total (soma de todos os horários);
+  // o detalhe por horário fica na tela.
   const canais = d.perChannel || [];
-  const tabelaCanais = canais.map(c => `
-    <tbody class="canal">
-      <tr class="grupo"><td colspan="2">${esc(c.name)}</td></tr>
-      ${c.hours.map(h => `<tr><td class="hora">${esc(h.name)}</td><td class="n">${num(h.value)}</td></tr>`).join("")}
-      <tr class="totcanal"><td>Total ${esc(c.name)}</td><td class="n">${num(c.total)}</td></tr>
-    </tbody>`).join("");
+  const tabelaCanais = canais.map(c => `<tr><td>${esc(c.name)}</td><td class="n">${num(c.total)}</td></tr>`).join("");
 
   const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Relatório ${esc(boardName || "")} ${esc(channelLabel || "")} ${esc(faixa)}</title>
 <style>
@@ -2698,9 +2693,6 @@ function printReportSheet(d, { periodLabel, boardName, channelLabel }) {
   th { font-size: 9pt; text-transform: uppercase; color: #444; border-bottom: 1px solid #111; }
   .n { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
   tr.grupo td { font-weight: bold; background: #eee; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  tbody.canal { page-break-inside: avoid; }
-  td.hora { padding-left: 18px; }
-  tr.totcanal td { font-weight: bold; border-top: 1px solid #111; border-bottom: 2px solid #111; }
   tfoot td { font-weight: bold; border-top: 2px solid #111; border-bottom: none; }
   tr { page-break-inside: avoid; }
   .nota { font-size: 8pt; color: #666; margin-top: 4px; }
@@ -2719,10 +2711,10 @@ function printReportSheet(d, { periodLabel, boardName, channelLabel }) {
   </div>
 
   ${canais.length ? `
-  <h2>Por canal e horário</h2>
+  <h2>Por canal</h2>
   <table>
-    <thead><tr><th>Canal / horário</th><th class="n">Qtd.</th></tr></thead>
-    ${tabelaCanais}
+    <thead><tr><th>Canal</th><th class="n">Total (soma dos horários)</th></tr></thead>
+    <tbody>${tabelaCanais}</tbody>
     ${canais.length > 1 ? `<tfoot><tr><td>Total geral (${canais.length} canais)</td><td class="n">${num(d.total)}</td></tr></tfoot>` : ""}
   </table>` : `<p>Sem quantidades registradas neste período.</p>`}
 
